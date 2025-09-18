@@ -12,11 +12,15 @@ A persistent knowledge base MCP server that allows LLM tools to store, retrieve,
 
 ## Installation
 
+### Prerequisites
+- Node.js 18+
+- pnpm 9+ (install with `npm install -g pnpm`)
+
 ```bash
 git clone <repository-url>
 cd llm-memory-mcp
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ## Quick Start
@@ -24,7 +28,7 @@ npm run build
 ### 1. Start the Server
 
 ```bash
-npm start
+pnpm start
 ```
 
 ### 2. Configure in Your MCP Client
@@ -77,7 +81,7 @@ Or add to your Cursor configuration file (`~/.cursor/mcp_servers.json`):
 
 1. Install Codex CLI if you haven't already:
    ```bash
-   npm install -g @codex-ai/cli
+   pnpm add -g @codex-ai/cli
    ```
 
 2. Configure the MCP server in your Codex configuration:
@@ -123,7 +127,7 @@ For other MCP-compatible tools, use this general configuration:
 
 **Important Notes:**
 - Replace `/absolute/path/to/llm-memory-mcp` with the actual absolute path to your installation
-- Ensure the server is built (`npm run build`) before configuring
+- Ensure the server is built (`pnpm run build`) before configuring
 - Restart your MCP client after adding the configuration
 
 ### 3. Use the Tools
@@ -566,19 +570,19 @@ Compatible with Codex CLI for command-line AI development workflows. Use natural
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Development mode
-npm run dev
+pnpm run dev
 
 # Build
-npm run build
+pnpm run build
 
 # Type checking
-npm run typecheck
+pnpm run typecheck
 
 # Linting
-npm run lint
+pnpm run lint
 
 # Test functionality
 node test-functionality.js
