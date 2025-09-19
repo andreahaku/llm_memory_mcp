@@ -238,6 +238,22 @@ Notes:
 - `index/` stores token -> posting lists (and optional vector ANN index). Rebuilds are possible by replaying `journal.ndjson`.
  - Snapshots store lastTs + checksum; state-ok records last verified checksum.
 
+## Testing & Troubleshooting
+
+- Local test setup
+  - Prefer project-local storage and skip startup replay during tests:
+    - `LLM_MEMORY_HOME_DIR="$(pwd)" LLM_MEMORY_SKIP_STARTUP_REPLAY=1 pnpm run test:all`
+  - To reduce startup stalls but keep replay: `LLM_MEMORY_STARTUP_REPLAY_MS=2000`
+
+- Vector dimension consistency
+  - Bulk vector import enforces a single `dim`. If the store has a different dimension, either pass `dim` to import or clean vector files (e.g. `.llm-memory/index/vectors*.json`).
+
+- Readiness
+  - In CI or constrained environments, probe `resources/list` or `kb://health` before high-volume tool calls to ensure the server is responsive.
+
+- Shell globs
+  - Use `rm -f` or enable `NULL_GLOB` if your shell complains about missing vector/snapshot files during cleanup.
+
 ## Migration Plan
 
 Phase 1: Prepare and Integrate Backend

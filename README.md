@@ -327,6 +327,32 @@ pnpm run test:all         # end-to-end tool tests
 pnpm run simulate:user    # simulated JS/TS flow
 ```
 
+## Testing & Troubleshooting
+
+- Recommended env for tests/simulation
+  - Use project-local storage and skip startup replay for snappy runs:
+    - `LLM_MEMORY_HOME_DIR="$(pwd)" LLM_MEMORY_SKIP_STARTUP_REPLAY=1 pnpm run test:all`
+    - `LLM_MEMORY_HOME_DIR="$(pwd)" LLM_MEMORY_SKIP_STARTUP_REPLAY=1 pnpm run simulate:user`
+  - Alternatively delay replay instead of disabling:
+    - `LLM_MEMORY_STARTUP_REPLAY_MS=2000 pnpm run test:all`
+
+- Vector store dimension issues
+  - Bulk imports enforce a single embedding dimension. If you previously stored a different dimension, either:
+    - Pass a `dim` override to `vectors.importBulk` / `vectors.importJsonl`, or
+    - Clean the local vector files and re-import:
+      - `rm -f .llm-memory/index/vectors.json .llm-memory/index/vectors.meta.json`
+
+- Snapshot/verify workflow
+  - For fast restarts, run once: `maintenance.compactSnapshot` (project/all), then `maintenance.verify` should report ok=true.
+  - Verify compares the current checksum against both snapshot and the last `state-ok` marker.
+
+- Zsh glob “no matches found”
+  - Use `rm -f` to ignore missing files, or enable NULL_GLOB temporarily: `setopt NULL_GLOB`.
+
+- “MODULE_TYPELESS_PACKAGE_JSON” warning
+  - Optional: add `"type": "module"` to package.json or run Node with `--input-type=module` to silence the warning.
+
+
 Manual test:
 - `node test-memory-tools.js` — exercises memory.* tools via stdio
 
