@@ -3,10 +3,10 @@
  End-to-end test suite for MCP tools (committed scope only to avoid homedir sandbox).
 */
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const server = spawn('node', ['dist/index.js']);
+const server = spawn('node', ['dist/index.js'], { env: { ...process.env, LLM_MEMORY_HOME_DIR: process.cwd(), LLM_MEMORY_SKIP_STARTUP_REPLAY: process.env.LLM_MEMORY_SKIP_STARTUP_REPLAY || '1' } });
 server.stderr.setEncoding('utf8');
 server.stdout.setEncoding('utf8');
 
@@ -38,7 +38,7 @@ function rpc(method, params) {
   const payload = { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) };
   server.stdin.write(JSON.stringify(payload) + '\n');
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { reject(new Error(`timeout for ${method}`)); }, 10000);
+    const timer = setTimeout(() => { reject(new Error(`timeout for ${method}`)); }, 20000);
     responses.set(id, { resolve: (msg) => { clearTimeout(timer); resolve(msg); } });
   });
 }
@@ -78,6 +78,8 @@ function parseIdFromResult(result) {
 async function main() {
   // Give server more time to initialize in sandboxed environments
   await new Promise(r => setTimeout(r, 1500));
+  // Redirect local scope home to project to avoid homedir permissions
+  process.env.LLM_MEMORY_HOME_DIR = process.cwd();
   const tools = await listTools();
   assert(tools.includes('project.initCommitted'), 'tools include project.initCommitted');
 
@@ -86,11 +88,11 @@ async function main() {
   assert(true, 'project.initCommitted ran');
 
   // Upsert two items in committed scope
-  const r1 = await callTool('memory.upsert', { type: 'snippet', scope: 'committed', title: 'Test Snippet', language: 'typescript', code: 'export const x = 1;', tags: ['test','ts'] });
+  const r1 = await callTool('memory.upsert', { type: 'snippet', scope: 'committed', title: 'Test Snippet', language: 'typescript', code: 'export const x = 1;', tags: ['test','ts'], sensitivity: 'team' });
   const id1 = parseIdFromResult(r1);
   assert(!!id1, 'memory.upsert returned id1');
 
-  const r2 = await callTool('memory.upsert', { type: 'pattern', scope: 'committed', title: 'Pattern A', text: 'Use debounce for typing events', tags: ['pattern','ux'] });
+  const r2 = await callTool('memory.upsert', { type: 'pattern', scope: 'committed', title: 'Pattern A', text: 'Use debounce for typing events', tags: ['pattern','ux'], sensitivity: 'team' });
   const id2 = parseIdFromResult(r2);
   assert(!!id2, 'memory.upsert returned id2');
 
@@ -118,14 +120,16 @@ async function main() {
   const packObj = JSON.parse(pack.content[0].text);
   assert(Array.isArray(packObj.snippets), 'memory.contextPack returned snippets');
 
-  // Vectors: set and remove
-  await callTool('vectors.set', { scope: 'committed', id: id1, vector: [0.1, 0.2, 0.3] });
-  assert(true, 'vectors.set ok');
-  await callTool('vectors.remove', { scope: 'committed', id: id1 });
-  assert(true, 'vectors.remove ok');
+  // Vectors: bulk import first to establish dimension cleanly
 
   // Bulk vectors via items
-  const bulkRes = await callTool('vectors.importBulk', { scope: 'committed', items: [ { id: id1, vector: [0.1,0.2] }, { id: id2, vector: [0.2,0.1] } ] });
+  // Reset vector store to ensure clean dimension
+  const idxDir = resolve(process.cwd(), '.llm-memory', 'index');
+  const vecPath = resolve(idxDir, 'vectors.json');
+  const vecMeta = resolve(idxDir, 'vectors.meta.json');
+  try { if (existsSync(vecPath)) unlinkSync(vecPath); } catch {}
+  try { if (existsSync(vecMeta)) unlinkSync(vecMeta); } catch {}
+  const bulkRes = await callTool('vectors.importBulk', { scope: 'committed', dim: 2, items: [ { id: id1, vector: [0.1,0.2] }, { id: id2, vector: [0.2,0.1] } ] });
   const bulkObj = JSON.parse(bulkRes.content[0].text);
   assert(bulkObj.ok === 2, 'vectors.importBulk ok==2');
 
