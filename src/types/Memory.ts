@@ -173,5 +173,6 @@ export interface MemoryConfig {
     compactEvery?: number; // compact journal after N appends (default: 500)
     compactIntervalMs?: number; // time-based compaction interval (default: 24h)
     indexFlush?: { maxOps?: number; maxMs?: number }; // index scheduler flush thresholds
+    snapshotIntervalMs?: number; // periodic snapshot interval (default: 24h)
   };
 }

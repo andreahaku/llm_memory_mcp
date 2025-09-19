@@ -341,7 +341,7 @@ export class FileStore {
   }
 
   // Snapshot metadata: record the last applied journal timestamp
-  readSnapshotMeta(): { lastTs?: string } | null {
+  readSnapshotMeta(): { lastTs?: string; checksum?: string } | null {
     const p = path.join(this.directory, 'index', 'snapshot.json');
     if (!existsSync(p)) return null;
     try {
@@ -352,7 +352,7 @@ export class FileStore {
     }
   }
 
-  writeSnapshotMeta(meta: { lastTs: string }): void {
+  writeSnapshotMeta(meta: { lastTs: string; checksum?: string }): void {
     const dir = path.join(this.directory, 'index');
     const p = path.join(dir, 'snapshot.json');
     const tmp = p + '.tmp';

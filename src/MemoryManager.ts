@@ -37,6 +37,7 @@ export class MemoryManager {
   private compactionIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
   private configWatchers: Partial<Record<MemoryScope, fs.FSWatcher>> = {};
   private configDebounce: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
+  private snapshotIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
     // Background journal replay across scopes for fast consistency on startup
@@ -64,6 +65,15 @@ export class MemoryManager {
           this.replayJournal(scope, cwd, true).catch(() => {});
           this.queryCache.clear();
         }, intervalMs);
+      }
+      // Time-based snapshot (default daily)
+      const snapMs = cfg?.maintenance?.snapshotIntervalMs ?? 24 * 60 * 60 * 1000;
+      if (snapMs > 0 && !this.snapshotIntervals[scope]) {
+        this.snapshotIntervals[scope] = setInterval(() => {
+          const ts = new Date().toISOString();
+          const checksum = this.computeScopeChecksum(scope);
+          this.getStore(scope).writeSnapshotMeta({ lastTs: ts, checksum });
+        }, snapMs);
       }
       // Config hot-reload watcher
       const configPath = path.join(dir, 'config.json');
@@ -550,7 +560,8 @@ export class MemoryManager {
       const now = new Date().toISOString();
       const compacted = items.map(it => ({ op: 'upsert', item: it, ts: now, actor: 'compact' } as any));
       store.replaceJournal(compacted);
-      store.writeSnapshotMeta({ lastTs: now });
+      const checksum = this.computeScopeChecksum(scope);
+      store.writeSnapshotMeta({ lastTs: now, checksum });
     }
     return { items: items.length, deleted };
   }
@@ -590,6 +601,14 @@ export class MemoryManager {
           await this.replayJournal(s, undefined, false);
           continue;
         }
+        // Validate snapshot checksum if present
+        if (snap.checksum) {
+          const current = this.computeScopeChecksum(s);
+          if (current && current !== snap.checksum) {
+            await this.replayJournal(s, undefined, false);
+            continue;
+          }
+        }
         const tail = await store.readJournalSince(snap.lastTs);
         if (!tail.length) continue;
         // Apply tail incrementally to catalog and index
@@ -612,11 +631,16 @@ export class MemoryManager {
             store.removeItemFileRaw(e.id);
             delete (catalog as any)[e.id];
             indexer.removeItem(e.id);
+            // prune vector if present
+            try { this.getVectorIndex(s).remove(e.id); } catch {}
           }
           if (e.ts && (!last || e.ts > last)) last = e.ts;
         }
         store.setCatalog(catalog);
-        if (last) store.writeSnapshotMeta({ lastTs: last });
+        if (last) {
+          const checksum = this.computeScopeChecksum(s);
+          store.writeSnapshotMeta({ lastTs: last, checksum });
+        }
       } catch {
         // ignore per-scope failures at startup
       }
@@ -700,7 +724,42 @@ export class MemoryManager {
           this.queryCache.clear();
         }, intervalMs);
       }
+      // Update snapshot interval timer
+      const snapMs = cfg?.maintenance?.snapshotIntervalMs ?? 24 * 60 * 60 * 1000;
+      if (this.snapshotIntervals[scope]) { clearInterval(this.snapshotIntervals[scope]!); delete this.snapshotIntervals[scope]; }
+      if (snapMs > 0) {
+        this.snapshotIntervals[scope] = setInterval(() => {
+          const ts = new Date().toISOString();
+          const checksum = this.computeScopeChecksum(scope);
+          this.getStore(scope).writeSnapshotMeta({ lastTs: ts, checksum });
+        }, snapMs);
+      }
     } catch {}
+  }
+
+  private computeScopeChecksum(scope: MemoryScope, cwd?: string): string | undefined {
+    const crypto = require('node:crypto');
+    const fsmod = require('node:fs');
+    const p = require('node:path');
+    try {
+      const dir = this.resolver.getScopeDirectory(scope, cwd);
+      const h = crypto.createHash('sha1');
+      const files = [
+        p.join(dir, 'catalog.json'),
+        p.join(dir, 'index', 'inverted.json'),
+        p.join(dir, 'index', 'lengths.json'),
+        p.join(dir, 'index', 'vectors.json')
+      ];
+      for (const f of files) {
+        if (fsmod.existsSync(f)) {
+          const data = fsmod.readFileSync(f);
+          h.update(data);
+        }
+      }
+      return h.digest('hex');
+    } catch {
+      return undefined;
+    }
   }
 
   async syncStatus(cwd?: string): Promise<{ onlyLocal: MemoryItemSummary[]; onlyCommitted: MemoryItemSummary[]; localNewer: MemoryItemSummary[]; committedNewer: MemoryItemSummary[] }> {
