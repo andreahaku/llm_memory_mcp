@@ -424,9 +424,28 @@ export class MemoryManager {
     const result = await this.query({ ...q, k });
     const items = result.items;
 
+    const snippetLanguages = (q as any).snippetLanguages as string[] | undefined;
+    const snippetFilePatterns = (q as any).snippetFilePatterns as string[] | undefined;
+
+    const globs: RegExp[] | undefined = snippetFilePatterns?.map(p => {
+      // Convert a simple glob (* and ?) to RegExp
+      const esc = p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+      return new RegExp('^' + esc + '$');
+    });
+
+    const fileMatches = (file?: string): boolean => {
+      if (!globs || globs.length === 0) return true;
+      if (!file) return false;
+      return globs.some(rx => rx.test(file));
+    };
+
     // Build snippets
     const snippets: MemoryContextPack['snippets'] = [];
     for (const it of items) {
+      if (snippetLanguages && snippetLanguages.length) {
+        if (!it.language || !snippetLanguages.includes(it.language)) continue;
+      }
+      if (!fileMatches(it.context?.file)) continue;
       const content = (it.code ?? it.text ?? '').trim();
       if (!content) continue;
       const lines = content.split(/\r?\n/);

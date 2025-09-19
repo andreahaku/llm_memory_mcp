@@ -142,7 +142,9 @@ class LLMKnowledgeBaseServer {
               scope: { type: 'string', enum: ['global','local','committed','project','all'] },
               k: { type: 'number' },
               filters: { type: 'object' },
-              snippetWindow: { type: 'object', properties: { before: { type: 'number' }, after: { type: 'number' } } }
+              snippetWindow: { type: 'object', properties: { before: { type: 'number' }, after: { type: 'number' } } },
+              snippetLanguages: { type: 'array', items: { type: 'string' } },
+              snippetFilePatterns: { type: 'array', items: { type: 'string' } }
             },
             additionalProperties: true,
           },
