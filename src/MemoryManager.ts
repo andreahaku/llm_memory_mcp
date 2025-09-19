@@ -426,6 +426,7 @@ export class MemoryManager {
 
     const snippetLanguages = (q as any).snippetLanguages as string[] | undefined;
     const snippetFilePatterns = (q as any).snippetFilePatterns as string[] | undefined;
+    const maxChars = (q as any).maxChars as number | undefined;
 
     const globs: RegExp[] | undefined = snippetFilePatterns?.map(p => {
       // Convert a simple glob (* and ?) to RegExp
@@ -439,8 +440,39 @@ export class MemoryManager {
       return globs.some(rx => rx.test(file));
     };
 
-    // Build snippets
+    // Helpers for symbol-aware cropping
+    const findSymbolWindow = (content: string, symbol?: string) => {
+      if (!symbol) return null as { start: number; end: number } | null;
+      const lines = content.split(/\r?\n/);
+      const idx = lines.findIndex(l => l.includes(symbol));
+      if (idx < 0) return null;
+      const start = Math.max(0, idx - window.before);
+      const end = Math.min(lines.length, idx + 1 + window.after);
+      return { start, end };
+    };
+
+    // Build snippets under optional budget
     const snippets: MemoryContextPack['snippets'] = [];
+    let remaining = maxChars ?? Number.POSITIVE_INFINITY;
+    const pushWithBudget = (code: string, meta: { language?: string; file?: string; range?: { start: number; end: number } }) => {
+      if (!Number.isFinite(remaining)) {
+        snippets.push({ ...meta, code });
+        return true;
+      }
+      const minChunk = 120; // minimal useful snippet
+      if (code.length <= remaining) {
+        snippets.push({ ...meta, code });
+        remaining -= code.length;
+        return true;
+      } else if (remaining >= minChunk) {
+        const sliced = code.slice(0, Math.max(minChunk, remaining - 3)) + '...';
+        snippets.push({ ...meta, code: sliced });
+        remaining -= sliced.length;
+        return false; // budget likely exhausted
+      }
+      return false;
+    };
+
     for (const it of items) {
       if (snippetLanguages && snippetLanguages.length) {
         if (!it.language || !snippetLanguages.includes(it.language)) continue;
@@ -454,14 +486,13 @@ export class MemoryManager {
         const start = Math.max(0, it.context.range.start - 1 - window.before);
         const end = Math.min(lines.length, (it.context.range.end) + window.after);
         code = lines.slice(start, end).join('\n');
+      } else {
+        const sym = it.context?.function || it.facets.symbols?.[0];
+        const win = findSymbolWindow(content, sym);
+        if (win) code = lines.slice(win.start, win.end).join('\n');
       }
-      snippets.push({
-        language: it.language,
-        file: it.context?.file,
-        range: it.context?.range,
-        code,
-      });
-      if (snippets.length >= Math.min(k, 12)) break;
+      const ok = pushWithBudget(code, { language: it.language, file: it.context?.file, range: it.context?.range });
+      if (snippets.length >= Math.min(k, 12) || (Number.isFinite(remaining) && remaining <= 0)) break;
     }
 
     // Facts and configs
@@ -473,11 +504,37 @@ export class MemoryManager {
     for (const it of items) {
       if (it.type === 'fact') {
         const t = (it.text || it.title || '').trim();
-        if (t) facts.push(t);
+        if (t) {
+          const s = t.length;
+          if (!Number.isFinite(remaining) || s <= remaining) {
+            facts.push(t);
+            if (Number.isFinite(remaining)) remaining -= s;
+          } else if (remaining > 40) {
+            facts.push(t.slice(0, remaining - 3) + '...');
+            remaining = 0;
+          }
+        }
       } else if (it.type === 'config') {
-        configs.push({ key: it.title || '', value: it.text || it.code || '', context: it.context?.file });
+        let val = (it.text || it.code || '').trim();
+        if (Number.isFinite(remaining) && val.length > remaining) {
+          if (remaining <= 40) continue;
+          val = val.slice(0, remaining - 3) + '...';
+          remaining = 0;
+        } else if (Number.isFinite(remaining)) {
+          remaining -= val.length;
+        }
+        configs.push({ key: it.title || '', value: val, context: it.context?.file });
       } else if (it.type === 'pattern') {
-        patterns.push({ title: it.title || '', description: it.text || '', code: it.code });
+        let desc = (it.text || '').trim();
+        if (Number.isFinite(remaining) && desc.length > remaining) {
+          if (remaining > 40) {
+            desc = desc.slice(0, remaining - 3) + '...';
+            remaining = 0;
+          } else continue;
+        } else if (Number.isFinite(remaining)) {
+          remaining -= desc.length;
+        }
+        patterns.push({ title: it.title || '', description: desc, code: it.code });
       }
       for (const l of it.links || []) {
         links.push({ rel: l.rel, to: l.to, title: it.title });

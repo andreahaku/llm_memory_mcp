@@ -144,7 +144,8 @@ class LLMKnowledgeBaseServer {
               filters: { type: 'object' },
               snippetWindow: { type: 'object', properties: { before: { type: 'number' }, after: { type: 'number' } } },
               snippetLanguages: { type: 'array', items: { type: 'string' } },
-              snippetFilePatterns: { type: 'array', items: { type: 'string' } }
+              snippetFilePatterns: { type: 'array', items: { type: 'string' } },
+              maxChars: { type: 'number', description: 'Optional content-length budget for the pack' }
             },
             additionalProperties: true,
           },
@@ -313,6 +314,7 @@ class LLMKnowledgeBaseServer {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: [
         { uri: 'kb://project/info', name: 'Project Info', description: 'Project memory context', mimeType: 'application/json' },
+        { uri: 'kb://context/pack', name: 'Context Pack', description: 'Context pack; pass query params in URI', mimeType: 'application/json' },
         { uri: 'kb://health', name: 'Server Health', description: 'Status and metrics', mimeType: 'application/json' },
       ],
     }));
@@ -331,6 +333,41 @@ class LLMKnowledgeBaseServer {
                 mimeType: 'application/json',
                 text: JSON.stringify({ project: projectInfo, recent: summaries }, null, 2)
               }
+            ]
+          };
+        }
+
+        if (uri.startsWith('kb://context/pack')) {
+          // Parse query params manually: kb://context/pack?q=...&scope=project&k=12&maxChars=8000
+          const idx = uri.indexOf('?');
+          const params: Record<string, string> = {};
+          if (idx >= 0) {
+            const qs = uri.slice(idx + 1);
+            for (const part of qs.split('&')) {
+              const [k, v] = part.split('=');
+              if (!k) continue;
+              params[decodeURIComponent(k)] = v ? decodeURIComponent(v) : '';
+            }
+          }
+          const scope = (params.scope as any) || 'project';
+          const k = params.k ? Number(params.k) : undefined;
+          const maxChars = params.maxChars ? Number(params.maxChars) : undefined;
+          const snippetLanguages = params.snippetLanguages ? params.snippetLanguages.split(',') : undefined;
+          const snippetFilePatterns = params.snippetFilePatterns ? params.snippetFilePatterns.split(',') : undefined;
+          const pack = await this.memory.contextPack({
+            q: params.q,
+            scope,
+            k,
+            filters: undefined,
+            snippetWindow: undefined,
+            // extras carried through via any-cast inside contextPack
+            ...(maxChars != null ? { maxChars } : {}),
+            ...(snippetLanguages ? { snippetLanguages } as any : {}),
+            ...(snippetFilePatterns ? { snippetFilePatterns } as any : {}),
+          } as any);
+          return {
+            contents: [
+              { uri, mimeType: 'application/json', text: JSON.stringify(pack, null, 2) }
             ]
           };
         }
