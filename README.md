@@ -323,6 +323,8 @@ pnpm run dev
 pnpm run build
 pnpm run typecheck
 pnpm run lint
+pnpm run test:all         # end-to-end tool tests
+pnpm run simulate:user    # simulated JS/TS flow
 ```
 
 Manual test:

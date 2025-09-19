@@ -40,18 +40,24 @@ export class MemoryManager {
   private snapshotIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
-    // Background journal replay across scopes for fast consistency on startup
-    setImmediate(() => {
-      this.startupFastRecover().catch(() => {});
-    });
+    // Background journal replay across scopes for fast consistency on startup,
+    // but allow disabling or delaying via env vars to avoid blocking first requests.
+    const skip = process.env.LLM_MEMORY_SKIP_STARTUP_REPLAY === '1';
+    const delay = Number(process.env.LLM_MEMORY_STARTUP_REPLAY_MS || '1000');
+    if (!skip) {
+      setTimeout(() => {
+        this.startupFastRecover().catch(() => {});
+      }, Math.max(0, isFinite(delay) ? delay : 1000));
+    }
   }
 
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
       const store = new FileStore(dir);
-      // Set compaction hook based on scope config
-      const cfg = this.readConfig(scope, cwd) || undefined;
+      this.stores[scope] = store; // set early to avoid recursion
+      // Set compaction hook based on scope config (read directly from store)
+      const cfg = store.readConfig() || undefined;
       const thr = cfg?.maintenance?.compactEvery || 500;
       store.setCompactionHook(() => {
         // Compact by replaying and truncating journal for this scope
@@ -72,7 +78,7 @@ export class MemoryManager {
         this.snapshotIntervals[scope] = setInterval(() => {
           const ts = new Date().toISOString();
           const checksum = this.computeScopeChecksum(scope);
-          this.getStore(scope).writeSnapshotMeta({ lastTs: ts, checksum });
+          store.writeSnapshotMeta({ lastTs: ts, checksum });
         }, snapMs);
       }
       // Config hot-reload watcher
@@ -85,7 +91,6 @@ export class MemoryManager {
           });
         } catch {}
       }
-      this.stores[scope] = store;
     }
     return this.stores[scope]!;
   }
@@ -591,16 +596,17 @@ export class MemoryManager {
     for (const s of ['committed','local','global'] as MemoryScope[]) this.snapshotScope(s, ts, cwd);
   }
 
-  verifyScope(scope: MemoryScope, cwd?: string): { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string } {
+  verifyScope(scope: MemoryScope, cwd?: string): { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string; okState?: boolean } {
     const store = this.getStore(scope, cwd);
     const snap = store.readSnapshotMeta();
     const state = store.readStateOk();
     const checksum = this.computeScopeChecksum(scope, cwd);
     const snapshotChecksum = snap?.checksum;
     const stateChecksum = state?.checksum;
-    const ok = !!checksum && !!snapshotChecksum && checksum === snapshotChecksum;
+    const okSnap = !!checksum && !!snapshotChecksum && checksum === snapshotChecksum;
     const okState = !!checksum && !!stateChecksum && checksum === stateChecksum;
-    return { ok, checksum, snapshotChecksum, lastTs: snap?.lastTs, okState } as any;
+    const ok = okSnap || okState;
+    return { ok, checksum, snapshotChecksum, lastTs: snap?.lastTs, okState };
   }
 
   verifyAll(cwd?: string): Record<MemoryScope, { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string }> {
@@ -635,6 +641,7 @@ export class MemoryManager {
         const indexer = this.getIndexer(s);
         const weights = this.getRanking(s).fieldWeights as any;
         let last = snap.lastTs;
+        let applied = 0;
         for (const e of tail) {
           if (e.op === 'upsert' && e.item) {
             const it = e.item as MemoryItem;
@@ -654,6 +661,10 @@ export class MemoryManager {
             try { this.getVectorIndex(s).remove(e.id); } catch {}
           }
           if (e.ts && (!last || e.ts > last)) last = e.ts;
+          // Yield periodically to avoid blocking the event loop
+          if (++applied % 100 === 0) {
+            await new Promise(r => setTimeout(r, 0));
+          }
         }
         store.setCatalog(catalog);
         if (last) {
@@ -664,6 +675,8 @@ export class MemoryManager {
       } catch {
         // ignore per-scope failures at startup
       }
+      // Yield between scopes
+      await new Promise(r => setTimeout(r, 0));
     }
   }
 
@@ -836,8 +849,8 @@ export class MemoryManager {
     this.getVectorIndex(scope, cwd).remove(id);
   }
 
-  importVectorsBulk(scope: MemoryScope, items: Array<{ id: string; vector: number[] }>, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {
-    return this.getVectorIndex(scope, cwd).setBulk(items);
+  importVectorsBulk(scope: MemoryScope, items: Array<{ id: string; vector: number[] }>, dimOverride?: number, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {
+    return this.getVectorIndex(scope, cwd).setBulk(items, dimOverride);
   }
 
   importVectorsFromJsonl(scope: MemoryScope, filePath: string, dimOverride?: number, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {

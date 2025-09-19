@@ -11,6 +11,8 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "jest",
+    "test:all": "node tests/test-all-tools.js",
+    "simulate:user": "node scripts/simulate-user-flow.js",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
     "preinstall": "npx only-allow pnpm"

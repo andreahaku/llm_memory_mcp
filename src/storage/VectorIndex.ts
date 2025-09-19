@@ -66,12 +66,27 @@ export class VectorIndex {
     this.ensure();
     const skipped: Array<{ id: string; reason: string }> = [];
     let ok = 0;
-    if (dimOverride != null) {
-      if (dimOverride <= 0) return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: 'invalid override dim' })) };
-      if (!this.meta.dim) this.meta.dim = dimOverride;
-      if (this.meta.dim !== dimOverride) return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: `override dim ${dimOverride} != existing ${this.meta.dim}` })) };
+    const hasAny = Object.keys(this.vectors).length > 0;
+    // Decide target dimension
+    let targetDim = dimOverride;
+    if (targetDim == null) {
+      const hasAnyVecs = Object.keys(this.vectors).length > 0;
+      if (hasAnyVecs && this.meta.dim) targetDim = this.meta.dim;
+      else if (items.length > 0 && Array.isArray(items[0].vector)) targetDim = items[0].vector.length;
+      else if (this.meta.dim) targetDim = this.meta.dim;
     }
+    if (!targetDim || targetDim <= 0) return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: 'unknown target dimension' })) };
+    // If store empty, (re)set dimension to targetDim; else enforce existing
+    if (!hasAny) this.meta.dim = targetDim;
+    if (hasAny && this.meta.dim && this.meta.dim !== targetDim) {
+      return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: `dimension ${targetDim} != existing ${this.meta.dim}` })) };
+    }
+    // Validate and set
     for (const it of items) {
+      if (!Array.isArray(it.vector) || it.vector.length !== this.meta.dim) {
+        skipped.push({ id: it.id, reason: `vector dim ${it.vector?.length} != ${this.meta.dim}` });
+        continue;
+      }
       try { this.set(it.id, it.vector); ok++; } catch (e: any) { skipped.push({ id: it.id, reason: e?.message || 'invalid' }); }
     }
     return { ok, skipped };

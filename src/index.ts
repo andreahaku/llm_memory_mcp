@@ -78,7 +78,8 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global','local','committed'] },
-              items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, vector: { type: 'array', items: { type: 'number' } } }, required: ['id','vector'] } }
+              items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, vector: { type: 'array', items: { type: 'number' } } }, required: ['id','vector'] } },
+              dim: { type: 'number' }
             },
             required: ['scope','items'],
             additionalProperties: false
@@ -366,7 +367,8 @@ class LLMKnowledgeBaseServer {
 
           case 'vectors.importBulk': {
             const scope = args.scope as MemoryScope;
-            const res = this.memory.importVectorsBulk(scope, args.items as Array<{ id: string; vector: number[] }>);
+            const dim = args.dim as number | undefined;
+            const res = this.memory.importVectorsBulk(scope, args.items as Array<{ id: string; vector: number[] }>, dim);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 

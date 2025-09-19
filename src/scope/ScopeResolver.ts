@@ -10,8 +10,9 @@ export class ScopeResolver {
   private projectsDir: string;
 
   constructor() {
-    const homeDir = os.homedir();
-    const memoryDir = path.join(homeDir, '.llm-memory');
+    const overrideHome = process.env.LLM_MEMORY_HOME_DIR;
+    const baseHome = overrideHome || os.homedir();
+    const memoryDir = path.join(baseHome, '.llm-memory');
     this.globalDir = path.join(memoryDir, 'global');
     this.projectsDir = path.join(memoryDir, 'projects');
   }
