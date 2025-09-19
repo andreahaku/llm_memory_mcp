@@ -172,6 +172,16 @@ class LLMKnowledgeBaseServer {
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed'] }, config: { type: 'object' } }, required: ['scope','config'] },
         },
         {
+          name: 'project.sync.status',
+          description: 'Show differences between local and committed memories',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
+        {
+          name: 'project.sync.merge',
+          description: 'Merge from local -> committed with sensitivity enforcement',
+          inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } }, additionalProperties: false },
+        },
+        {
           name: 'maintenance.rebuild',
           description: 'Rebuild catalog and inverted index from on-disk items',
           inputSchema: {
@@ -294,6 +304,16 @@ class LLMKnowledgeBaseServer {
             const scope = args.scope as MemoryScope;
             this.memory.writeConfig(scope, args.config as any);
             return { content: [{ type: 'text', text: 'project.config.set: ok' }] };
+          }
+
+          case 'project.sync.status': {
+            const status = await this.memory.syncStatus();
+            return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+          }
+
+          case 'project.sync.merge': {
+            const res = await this.memory.syncMerge(args.ids as string[] | undefined);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
           case 'maintenance.rebuild': {

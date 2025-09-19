@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, renameSync } from 'fs';
-import { readdir } from 'fs/promises';
+import { readdir, writeFile, rename, appendFile } from 'fs/promises';
 import * as path from 'path';
 import type { MemoryItem, MemoryItemSummary, JournalEntry, MemoryConfig } from '../types/Memory.js';
 
@@ -12,6 +12,9 @@ export class FileStore {
   private directory: string;
   private locks: Map<string, FileLock> = new Map();
   private pendingTimers: Set<NodeJS.Immediate> = new Set();
+  private compactionHook?: () => void;
+  private compactThreshold = 500;
+  private journalAppendCount = 0;
 
   constructor(directory: string) {
     this.directory = directory;
@@ -86,7 +89,7 @@ export class FileStore {
     this.appendJournal(journalEntry);
 
     // 2) Atomic item write
-    this.writeItemFileRaw(item);
+    await this.writeItemFileRaw(item);
 
     // 3) Async catalog update
     this.scheduleCatalogUpsert(item);
@@ -213,13 +216,13 @@ export class FileStore {
   }
 
   // Raw item write without journaling or catalog change (used by journal replay)
-  writeItemFileRaw(item: MemoryItem): void {
+  async writeItemFileRaw(item: MemoryItem): Promise<void> {
     const itemsDir = path.join(this.directory, 'items');
     const tmpDir = path.join(this.directory, 'tmp');
     const itemPath = path.join(itemsDir, `${item.id}.json`);
     const tmpPath = path.join(tmpDir, `${item.id}.json.tmp`);
-    writeFileSync(tmpPath, JSON.stringify(item, null, 2));
-    renameSync(tmpPath, itemPath);
+    await writeFile(tmpPath, JSON.stringify(item, null, 2));
+    await rename(tmpPath, itemPath);
   }
 
   // Overwrite catalog in one go (used by journal replay)
@@ -271,6 +274,12 @@ export class FileStore {
   private appendJournal(entry: JournalEntry): void {
     const journalPath = path.join(this.directory, 'journal.ndjson');
     appendFileSync(journalPath, JSON.stringify(entry) + '\n');
+    // Count and possibly trigger compaction hook
+    this.journalAppendCount++;
+    if (this.journalAppendCount >= this.compactThreshold) {
+      this.journalAppendCount = 0;
+      if (this.compactionHook) setImmediate(this.compactionHook);
+    }
   }
 
   async readJournal(limit?: number): Promise<JournalEntry[]> {
@@ -378,5 +387,10 @@ export class FileStore {
     }
 
     return deletedCount;
+  }
+
+  setCompactionHook(hook: () => void, threshold?: number): void {
+    this.compactionHook = hook;
+    if (threshold && threshold > 0) this.compactThreshold = threshold;
   }
 }

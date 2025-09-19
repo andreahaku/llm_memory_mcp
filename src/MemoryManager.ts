@@ -6,6 +6,7 @@ import { FileStore } from './storage/fileStore.js';
 import { InvertedIndexer } from './storage/Indexer.js';
 import { redactSecrets } from './utils/secretFilter.js';
 import { estimateTokens, allowedCharsForTokens } from './utils/tokenEstimate.js';
+import { LRU } from './utils/lru.js';
 import type {
   MemoryItem,
   MemoryItemSummary,
@@ -26,6 +27,7 @@ export class MemoryManager {
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, FileStore>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
+  private queryCache = new LRU<string, MemorySearchResult>(100);
 
   constructor() {
     // Background journal replay across scopes for fast consistency on startup
@@ -37,7 +39,16 @@ export class MemoryManager {
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
-      this.stores[scope] = new FileStore(dir);
+      const store = new FileStore(dir);
+      // Set compaction hook based on scope config
+      const cfg = this.readConfig(scope, cwd) || undefined;
+      const thr = cfg?.maintenance?.compactEvery || 500;
+      store.setCompactionHook(() => {
+        // Compact by replaying and truncating journal for this scope
+        this.replayJournal(scope, cwd, true).catch(() => {});
+        this.queryCache.clear();
+      }, thr);
+      this.stores[scope] = store;
     }
     return this.stores[scope]!;
   }
@@ -148,7 +159,18 @@ export class MemoryManager {
       version: (existing?.version ?? 0) + 1,
     };
 
+    // Enforce sensitivity policy for committed scope
+    if (item.scope === 'committed') {
+      const cfg = this.readConfig('committed');
+      const allowed = cfg?.sharing?.sensitivity || 'team'; // default: team
+      const rank = (s: string) => (s === 'public' ? 0 : s === 'team' ? 1 : 2);
+      if (rank(item.security.sensitivity) > rank(allowed)) {
+        throw new Error(`Sensitivity '${item.security.sensitivity}' not allowed in committed scope (max: ${allowed})`);
+      }
+    }
+
     await store.writeItem(item);
+    this.queryCache.clear();
     // Update inverted index asynchronously with configurable field weights
     const rank = this.getRanking(item.scope);
     setImmediate(() => {
@@ -208,6 +230,18 @@ export class MemoryManager {
   }
 
   async query(q: MemoryQuery, cwd?: string): Promise<MemorySearchResult> {
+    const key = JSON.stringify({
+      q: q.q || '',
+      scope: q.scope || 'project',
+      type: q.filters?.type || [],
+      tags: q.filters?.tags || [],
+      files: q.filters?.files || [],
+      symbols: q.filters?.symbols || [],
+      language: q.filters?.language || [],
+      k: q.k || 50,
+    });
+    const cached = this.queryCache.get(key);
+    if (cached) return cached;
     const scope = q.scope || 'project';
     const ids: Array<{ scope: MemoryScope; id: string; score?: number }> = [];
     const items: MemoryItem[] = [];
@@ -280,7 +314,9 @@ export class MemoryManager {
       scored.sort((a, b) => b.score - a.score);
       const k = q.k || 50;
       const chosen = scored.slice(0, k).map(s => s.it);
-      return { items: chosen, total: scored.length, scope, query: q };
+      const result = { items: chosen, total: scored.length, scope, query: q };
+      this.queryCache.set(key, result);
+      return result;
     } else {
       items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
@@ -314,10 +350,14 @@ export class MemoryManager {
         source: { scope, ids: chosen.map(x => x.id) },
       } as const;
 
-      return { items: chosen, total: items.length, scope, query: q };
+      const result = { items: chosen, total: items.length, scope, query: q };
+      this.queryCache.set(key, result);
+      return result;
     }
 
-    return { items: chosen, total: items.length, scope, query: q };
+    const result = { items: chosen, total: items.length, scope, query: q };
+    this.queryCache.set(key, result);
+    return result;
   }
 
   private filterItem(item: MemoryItem, q: MemoryQuery): boolean {
@@ -472,6 +512,51 @@ export class MemoryManager {
     return out;
   }
 
+  async syncStatus(cwd?: string): Promise<{ onlyLocal: MemoryItemSummary[]; onlyCommitted: MemoryItemSummary[]; localNewer: MemoryItemSummary[]; committedNewer: MemoryItemSummary[] }> {
+    const localCat = this.getStore('local', cwd).readCatalog();
+    const comCat = this.getStore('committed', cwd).readCatalog();
+    const onlyLocal: MemoryItemSummary[] = [];
+    const onlyCommitted: MemoryItemSummary[] = [];
+    const localNewer: MemoryItemSummary[] = [];
+    const committedNewer: MemoryItemSummary[] = [];
+    const byIdCommitted = comCat;
+    for (const l of Object.values(localCat)) {
+      const r = byIdCommitted[l.id];
+      if (!r) { onlyLocal.push(l); continue; }
+      if (l.updatedAt > r.updatedAt) localNewer.push(l);
+      else if (r.updatedAt > l.updatedAt) committedNewer.push(r);
+    }
+    for (const r of Object.values(comCat)) if (!localCat[r.id]) onlyCommitted.push(r);
+    return { onlyLocal, onlyCommitted, localNewer, committedNewer };
+  }
+
+  async syncMerge(ids?: string[], cwd?: string): Promise<{ merged: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    const merged: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+    const localStore = this.getStore('local', cwd);
+    const commitStore = this.getStore('committed', cwd);
+    const cfg = this.readConfig('committed');
+    const allowed = cfg?.sharing?.sensitivity || 'team';
+    const rank = (s: string) => (s === 'public' ? 0 : s === 'team' ? 1 : 2);
+    const list = ids && ids.length ? ids : await localStore.listItems();
+    for (const id of list) {
+      const item = await localStore.readItem(id);
+      if (!item) continue;
+      if (rank(item.security.sensitivity) > rank(allowed)) { skipped.push({ id, reason: `sensitivity ${item.security.sensitivity} exceeds ${allowed}` }); continue; }
+      try {
+        await commitStore.writeItem(item);
+        // Index async
+        setImmediate(() => this.getIndexer('committed').updateItem(item, this.getRanking('committed').fieldWeights as any));
+        merged.push(id);
+      } catch (e: any) {
+        skipped.push({ id, reason: e?.message || 'write failed' });
+      }
+    }
+    // Invalidate caches
+    this.queryCache.clear();
+    return { merged, skipped };
+  }
+
   async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {
     const scopes: MemoryScope[] = ['committed', 'local', 'global'];
     const out: Record<string, { items: number }> = {};
@@ -513,7 +598,17 @@ export class MemoryManager {
       return { start, end };
     };
 
-    // Build snippets under optional budget
+    // Build sections under optional budget and with caps/order from config
+    const getPackPrefs = () => {
+      // Use project preference: prefer committed, then local, else global
+      const prefScope: MemoryScope = (q.scope === 'global') ? 'global' : (q.scope === 'committed') ? 'committed' : 'local';
+      const cfg = this.readConfig(prefScope) || undefined;
+      const order = cfg?.contextPack?.order || ['snippets','facts','patterns','configs'];
+      const caps = cfg?.contextPack?.caps || { snippets: 12, facts: 8, patterns: 6, configs: 6 };
+      return { order, caps };
+    };
+    const prefs = getPackPrefs();
+
     const snippets: MemoryContextPack['snippets'] = [];
     let remainingChars = maxChars ?? Number.POSITIVE_INFINITY;
     let remainingTokens = tokenBudget ?? Number.POSITIVE_INFINITY;
@@ -551,107 +646,106 @@ export class MemoryManager {
       return true;
     };
 
-    for (const it of items) {
-      if (snippetLanguages && snippetLanguages.length) {
-        if (!it.language || !snippetLanguages.includes(it.language)) continue;
-      }
-      if (!fileMatches(it.context?.file)) continue;
-      const content = (it.code ?? it.text ?? '').trim();
-      if (!content) continue;
-      const lines = content.split(/\r?\n/);
-      let code = content;
-      if (it.context?.range && Number.isFinite(it.context.range.start) && Number.isFinite(it.context.range.end)) {
-        const start = Math.max(0, it.context.range.start - 1 - window.before);
-        const end = Math.min(lines.length, (it.context.range.end) + window.after);
-        code = lines.slice(start, end).join('\n');
-      } else {
-        const sym = it.context?.function || it.facets.symbols?.[0];
-        const win = findSymbolWindow(content, sym);
-        if (win) code = lines.slice(win.start, win.end).join('\n');
-      }
-      const ok = pushWithBudget(code, { language: it.language, file: it.context?.file, range: it.context?.range });
-      const budgetEmpty = (isFinite(remainingTokens) && remainingTokens <= 0) || (isFinite(remainingChars) && remainingChars <= 0);
-      if (snippets.length >= Math.min(k, 12) || budgetEmpty) break;
-    }
-
-    // Facts and configs
+    // Prepare section collectors
     const facts: string[] = [];
     const configs: MemoryContextPack['configs'] = [];
     const patterns: MemoryContextPack['patterns'] = [];
-    const links: MemoryContextPack['links'] = [];
 
-    for (const it of items) {
-      if (it.type === 'fact') {
-        const t = (it.text || it.title || '').trim();
-        if (t) {
+    // Assemble each section in sequence based on order, consuming budget
+    const sections = {
+      snippets: () => {
+        let count = 0;
+        for (const it of items) {
+          if (count >= (prefs.caps.snippets ?? 12)) break;
+          if (snippetLanguages && snippetLanguages.length) {
+            if (!it.language || !snippetLanguages.includes(it.language)) continue;
+          }
+          if (!fileMatches(it.context?.file)) continue;
+          const content = (it.code ?? it.text ?? '').trim();
+          if (!content) continue;
+          const lines = content.split(/\r?\n/);
+          let code = content;
+          if (it.context?.range && Number.isFinite(it.context.range.start) && Number.isFinite(it.context.range.end)) {
+            const start = Math.max(0, it.context.range.start - 1 - window.before);
+            const end = Math.min(lines.length, (it.context.range.end) + window.after);
+            code = lines.slice(start, end).join('\n');
+          } else {
+            const sym = it.context?.function || it.facets.symbols?.[0];
+            const win = findSymbolWindow(content, sym);
+            if (win) code = lines.slice(win.start, win.end).join('\n');
+          }
+          const ok = pushWithBudget(code, { language: it.language, file: it.context?.file, range: it.context?.range });
+          if (!ok && (isFinite(remainingTokens) && remainingTokens <= 0) || (isFinite(remainingChars) && remainingChars <= 0)) break;
+          count++;
+        }
+      },
+      facts: () => {
+        let count = 0;
+        for (const it of items) {
+          if (count >= (prefs.caps.facts ?? 8)) break;
+          if (it.type !== 'fact') continue;
+          const t = (it.text || it.title || '').trim();
+          if (!t) continue;
           if (isFinite(remainingTokens)) {
             const allowed = allowedCharsForTokens(remainingTokens);
             if (t.length <= allowed) {
-              facts.push(t);
-              remainingTokens = Math.max(0, remainingTokens - estimateTokens(t));
-            } else if (allowed > 40) {
-              facts.push(t.slice(0, allowed - 3) + '...');
-              remainingTokens = 0;
-            }
+              facts.push(t); remainingTokens = Math.max(0, remainingTokens - estimateTokens(t));
+            } else if (allowed > 40) { facts.push(t.slice(0, allowed - 3) + '...'); remainingTokens = 0; }
+            else break;
           } else if (isFinite(remainingChars)) {
-            if (t.length <= remainingChars) {
-              facts.push(t);
-              remainingChars -= t.length;
-            } else if (remainingChars > 40) {
-              facts.push(t.slice(0, remainingChars - 3) + '...');
-              remainingChars = 0;
-            }
-          } else {
-            facts.push(t);
-          }
+            if (t.length <= remainingChars) { facts.push(t); remainingChars -= t.length; }
+            else if (remainingChars > 40) { facts.push(t.slice(0, remainingChars - 3) + '...'); remainingChars = 0; }
+            else break;
+          } else { facts.push(t); }
+          count++;
         }
-      } else if (it.type === 'config') {
-        let val = (it.text || it.code || '').trim();
-        if (isFinite(remainingTokens)) {
-          const allowed = allowedCharsForTokens(remainingTokens);
-          if (val.length > allowed) {
-            if (allowed <= 40) continue;
-            val = val.slice(0, allowed - 3) + '...';
-            remainingTokens = 0;
-          } else {
-            remainingTokens = Math.max(0, remainingTokens - estimateTokens(val));
+      },
+      patterns: () => {
+        let count = 0;
+        for (const it of items) {
+          if (count >= (prefs.caps.patterns ?? 6)) break;
+          if (it.type !== 'pattern') continue;
+          let desc = (it.text || '').trim();
+          if (isFinite(remainingTokens)) {
+            const allowed = allowedCharsForTokens(remainingTokens);
+            if (desc.length > allowed) { if (allowed <= 40) break; desc = desc.slice(0, allowed - 3) + '...'; remainingTokens = 0; }
+            else { remainingTokens = Math.max(0, remainingTokens - estimateTokens(desc)); }
+          } else if (isFinite(remainingChars)) {
+            if (desc.length > remainingChars) { if (remainingChars <= 40) break; desc = desc.slice(0, remainingChars - 3) + '...'; remainingChars = 0; }
+            else { remainingChars -= desc.length; }
           }
-        } else if (isFinite(remainingChars)) {
-          if (val.length > remainingChars) {
-            if (remainingChars <= 40) continue;
-            val = val.slice(0, remainingChars - 3) + '...';
-            remainingChars = 0;
-          } else {
-            remainingChars -= val.length;
-          }
+          patterns.push({ title: it.title || '', description: desc, code: it.code });
+          count++;
         }
-        configs.push({ key: it.title || '', value: val, context: it.context?.file });
-      } else if (it.type === 'pattern') {
-        let desc = (it.text || '').trim();
-        if (isFinite(remainingTokens)) {
-          const allowed = allowedCharsForTokens(remainingTokens);
-          if (desc.length > allowed) {
-            if (allowed <= 40) continue;
-            desc = desc.slice(0, allowed - 3) + '...';
-            remainingTokens = 0;
-          } else {
-            remainingTokens = Math.max(0, remainingTokens - estimateTokens(desc));
+      },
+      configs: () => {
+        let count = 0;
+        for (const it of items) {
+          if (count >= (prefs.caps.configs ?? 6)) break;
+          if (it.type !== 'config') continue;
+          let val = (it.text || it.code || '').trim();
+          if (isFinite(remainingTokens)) {
+            const allowed = allowedCharsForTokens(remainingTokens);
+            if (val.length > allowed) { if (allowed <= 40) break; val = val.slice(0, allowed - 3) + '...'; remainingTokens = 0; }
+            else { remainingTokens = Math.max(0, remainingTokens - estimateTokens(val)); }
+          } else if (isFinite(remainingChars)) {
+            if (val.length > remainingChars) { if (remainingChars <= 40) break; val = val.slice(0, remainingChars - 3) + '...'; remainingChars = 0; }
+            else { remainingChars -= val.length; }
           }
-        } else if (isFinite(remainingChars)) {
-          if (desc.length > remainingChars) {
-            if (remainingChars <= 40) continue;
-            desc = desc.slice(0, remainingChars - 3) + '...';
-            remainingChars = 0;
-          } else {
-            remainingChars -= desc.length;
-          }
+          configs.push({ key: it.title || '', value: val, context: it.context?.file });
+          count++;
         }
-        patterns.push({ title: it.title || '', description: desc, code: it.code });
       }
-      for (const l of it.links || []) {
-        links.push({ rel: l.rel, to: l.to, title: it.title });
-      }
+    } as const;
+
+    for (const section of prefs.order) {
+      sections[section]();
+      const budgetEmpty = (isFinite(remainingTokens) && remainingTokens <= 0) || (isFinite(remainingChars) && remainingChars <= 0);
+      if (budgetEmpty) break;
     }
+    
+    const links: MemoryContextPack['links'] = [];
+    for (const it of items) for (const l of it.links || []) links.push({ rel: l.rel, to: l.to, title: it.title });
 
     // Hints: collect top tags and titles
     const tagCount = new Map<string, number>();

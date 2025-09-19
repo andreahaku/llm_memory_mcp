@@ -164,4 +164,11 @@ export interface MemoryConfig {
     recency?: { halfLifeDays?: number; scale?: number };
     phrase?: { bonus?: number; exactTitleBonus?: number };
   };
+  contextPack?: {
+    order?: Array<'snippets' | 'facts' | 'patterns' | 'configs'>;
+    caps?: { snippets?: number; facts?: number; patterns?: number; configs?: number };
+  };
+  maintenance?: {
+    compactEvery?: number; // compact journal after N appends (default: 500)
+  };
 }
