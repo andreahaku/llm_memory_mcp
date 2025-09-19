@@ -232,6 +232,11 @@ class LLMKnowledgeBaseServer {
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
         {
+          name: 'maintenance.snapshot',
+          description: 'Write a snapshot marker (record lastTs) for fast startup replay',
+          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
+        },
+        {
           name: 'maintenance.compact.now',
           description: 'Trigger immediate compaction for a scope (alias of maintenance.compact)',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
@@ -419,6 +424,14 @@ class LLMKnowledgeBaseServer {
             }
             const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'maintenance.snapshot': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') { this.memory.snapshotAll(); return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scopes: ['committed','local','global'] }, null, 2) }] }; }
+            if (scope === 'project') { this.memory.snapshotProject(); return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scopes: ['committed','local'] }, null, 2) }] }; }
+            this.memory.snapshotScope(scope as MemoryScope);
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scope }, null, 2) }] };
           }
 
           default:

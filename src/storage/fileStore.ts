@@ -230,6 +230,12 @@ export class FileStore {
     await rename(tmpPath, itemPath);
   }
 
+  // Raw item delete without journaling or catalog change (used by tail replay)
+  removeItemFileRaw(id: string): void {
+    const itemPath = path.join(this.directory, 'items', `${id}.json`);
+    if (existsSync(itemPath)) unlinkSync(itemPath);
+  }
+
   // Overwrite catalog in one go (used by journal replay)
   setCatalog(catalog: Record<string, MemoryItemSummary>): void {
     this.acquireLock('catalog');
@@ -310,6 +316,12 @@ export class FileStore {
     }
   }
 
+  async readJournalSince(sinceTs?: string): Promise<JournalEntry[]> {
+    const entries = await this.readJournal();
+    if (!sinceTs) return entries;
+    return entries.filter(e => !e.ts || e.ts > sinceTs);
+  }
+
   async listItems(): Promise<string[]> {
     const itemsDir = path.join(this.directory, 'items');
 
@@ -326,6 +338,26 @@ export class FileStore {
       console.error('Error listing items:', error);
       return [];
     }
+  }
+
+  // Snapshot metadata: record the last applied journal timestamp
+  readSnapshotMeta(): { lastTs?: string } | null {
+    const p = path.join(this.directory, 'index', 'snapshot.json');
+    if (!existsSync(p)) return null;
+    try {
+      const data = readFileSync(p, 'utf8');
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+
+  writeSnapshotMeta(meta: { lastTs: string }): void {
+    const dir = path.join(this.directory, 'index');
+    const p = path.join(dir, 'snapshot.json');
+    const tmp = p + '.tmp';
+    writeFileSync(tmp, JSON.stringify(meta, null, 2));
+    renameSync(tmp, p);
   }
 
   readConfig(): MemoryConfig | null {

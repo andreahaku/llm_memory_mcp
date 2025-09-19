@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as fs from 'node:fs';
 import { ulid } from './util/ulid.js';
 import { ScopeResolver } from './scope/ScopeResolver.js';
 import { FileStore } from './storage/fileStore.js';
@@ -34,11 +35,13 @@ export class MemoryManager {
   private indexDeletes: Partial<Record<MemoryScope, Set<string>>> = {};
   private indexTimers: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
   private compactionIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
+  private configWatchers: Partial<Record<MemoryScope, fs.FSWatcher>> = {};
+  private configDebounce: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
     // Background journal replay across scopes for fast consistency on startup
     setImmediate(() => {
-      this.replayAllFromJournal(false).catch(() => {});
+      this.startupFastRecover().catch(() => {});
     });
   }
 
@@ -61,6 +64,16 @@ export class MemoryManager {
           this.replayJournal(scope, cwd, true).catch(() => {});
           this.queryCache.clear();
         }, intervalMs);
+      }
+      // Config hot-reload watcher
+      const configPath = path.join(dir, 'config.json');
+      if (!this.configWatchers[scope]) {
+        try {
+          this.configWatchers[scope] = fs.watch(configPath, { persistent: false }, () => {
+            if (this.configDebounce[scope]) clearTimeout(this.configDebounce[scope]!);
+            this.configDebounce[scope] = setTimeout(() => this.applyConfig(scope, cwd), 200);
+          });
+        } catch {}
       }
       this.stores[scope] = store;
     }
@@ -537,6 +550,7 @@ export class MemoryManager {
       const now = new Date().toISOString();
       const compacted = items.map(it => ({ op: 'upsert', item: it, ts: now, actor: 'compact' } as any));
       store.replaceJournal(compacted);
+      store.writeSnapshotMeta({ lastTs: now });
     }
     return { items: items.length, deleted };
   }
@@ -546,6 +560,67 @@ export class MemoryManager {
     const out: any = {};
     for (const s of scopes) out[s] = await this.replayJournal(s, cwd, compact);
     return out;
+  }
+
+  snapshotScope(scope: MemoryScope, ts?: string, cwd?: string): void {
+    const store = this.getStore(scope, cwd);
+    const when = ts || new Date().toISOString();
+    store.writeSnapshotMeta({ lastTs: when });
+  }
+
+  snapshotProject(cwd?: string): void {
+    const ts = new Date().toISOString();
+    this.snapshotScope('committed', ts, cwd);
+    this.snapshotScope('local', ts, cwd);
+  }
+
+  snapshotAll(cwd?: string): void {
+    const ts = new Date().toISOString();
+    for (const s of ['committed','local','global'] as MemoryScope[]) this.snapshotScope(s, ts, cwd);
+  }
+
+  private async startupFastRecover(): Promise<void> {
+    const scopes: MemoryScope[] = ['committed', 'local', 'global'];
+    for (const s of scopes) {
+      try {
+        const store = this.getStore(s);
+        const snap = store.readSnapshotMeta();
+        if (!snap || !snap.lastTs) {
+          // Fallback: full replay (no compact)
+          await this.replayJournal(s, undefined, false);
+          continue;
+        }
+        const tail = await store.readJournalSince(snap.lastTs);
+        if (!tail.length) continue;
+        // Apply tail incrementally to catalog and index
+        const catalog = store.readCatalog();
+        const indexer = this.getIndexer(s);
+        const weights = this.getRanking(s).fieldWeights as any;
+        let last = snap.lastTs;
+        for (const e of tail) {
+          if (e.op === 'upsert' && e.item) {
+            const it = e.item as MemoryItem;
+            await store.writeItemFileRaw(it);
+            catalog[it.id] = {
+              id: it.id, type: it.type, scope: it.scope, title: it.title,
+              tags: it.facets.tags, files: it.facets.files, symbols: it.facets.symbols,
+              confidence: it.quality.confidence, pinned: it.quality.pinned,
+              createdAt: it.createdAt, updatedAt: it.updatedAt,
+            };
+            indexer.updateItem(it, weights);
+          } else if (e.op === 'delete' && e.id) {
+            store.removeItemFileRaw(e.id);
+            delete (catalog as any)[e.id];
+            indexer.removeItem(e.id);
+          }
+          if (e.ts && (!last || e.ts > last)) last = e.ts;
+        }
+        store.setCatalog(catalog);
+        if (last) store.writeSnapshotMeta({ lastTs: last });
+      } catch {
+        // ignore per-scope failures at startup
+      }
+    }
   }
 
   // Index update scheduler
@@ -567,6 +642,7 @@ export class MemoryManager {
 
   private ensureIndexTimer(scope: MemoryScope): void {
     if (this.indexTimers[scope]) return;
+    const maxMs = this.getIndexFlushConfig(scope).maxMs;
     this.indexTimers[scope] = setTimeout(() => {
       delete this.indexTimers[scope];
       const upserts = this.indexUpserts[scope] || new Map();
@@ -577,7 +653,54 @@ export class MemoryManager {
       const weights = this.getRanking(scope).fieldWeights as any;
       for (const item of upserts.values()) indexer.updateItem(item, weights);
       for (const id of deletes.values()) indexer.removeItem(id);
-    }, 100);
+    }, Math.max(1, maxMs));
+  }
+
+  private getIndexFlushConfig(scope: MemoryScope): { maxOps: number; maxMs: number } {
+    const cfg = this.readConfig(scope) || undefined;
+    const maxOps = cfg?.maintenance?.indexFlush?.maxOps ?? 200;
+    const maxMs = cfg?.maintenance?.indexFlush?.maxMs ?? 500;
+    return { maxOps, maxMs };
+  }
+
+  private maybeFlushIndexSoon(scope: MemoryScope): void {
+    const { maxOps } = this.getIndexFlushConfig(scope);
+    const up = this.indexUpserts[scope]?.size ?? 0;
+    const del = this.indexDeletes[scope]?.size ?? 0;
+    if (up + del >= maxOps) {
+      if (this.indexTimers[scope]) { clearTimeout(this.indexTimers[scope]!); delete this.indexTimers[scope]; }
+      // Immediate flush
+      const upserts = this.indexUpserts[scope] || new Map();
+      const deletes = this.indexDeletes[scope] || new Set();
+      this.indexUpserts[scope] = new Map();
+      this.indexDeletes[scope] = new Set();
+      const indexer = this.getIndexer(scope);
+      const weights = this.getRanking(scope).fieldWeights as any;
+      for (const item of upserts.values()) indexer.updateItem(item, weights);
+      for (const id of deletes.values()) indexer.removeItem(id);
+    }
+  }
+
+  private applyConfig(scope: MemoryScope, cwd?: string): void {
+    try {
+      const store = this.getStore(scope, cwd);
+      const cfg = store.readConfig();
+      // Update compaction threshold
+      const thr = cfg?.maintenance?.compactEvery || 500;
+      store.setCompactionHook(() => {
+        this.replayJournal(scope, cwd, true).catch(() => {});
+        this.queryCache.clear();
+      }, thr);
+      // Update time-based compaction interval
+      const intervalMs = cfg?.maintenance?.compactIntervalMs ?? 24 * 60 * 60 * 1000;
+      if (this.compactionIntervals[scope]) { clearInterval(this.compactionIntervals[scope]!); delete this.compactionIntervals[scope]; }
+      if (intervalMs > 0) {
+        this.compactionIntervals[scope] = setInterval(() => {
+          this.replayJournal(scope, cwd, true).catch(() => {});
+          this.queryCache.clear();
+        }, intervalMs);
+      }
+    } catch {}
   }
 
   async syncStatus(cwd?: string): Promise<{ onlyLocal: MemoryItemSummary[]; onlyCommitted: MemoryItemSummary[]; localNewer: MemoryItemSummary[]; committedNewer: MemoryItemSummary[] }> {
