@@ -177,8 +177,23 @@ export class MemoryManager {
 
     const pushScope = async (s: MemoryScope) => {
       if (q.q) {
-        // Use inverted index for term lookup
-        const ranked = this.getIndexer(s, cwd).search(q.q, (id) => 0);
+        // Preload catalog for boosts (pin, recency)
+        const st = this.getStore(s, cwd);
+        const catalog = st.readCatalog();
+        const scopeBonus = s === 'committed' ? 1.5 : s === 'local' ? 1 : 0.5;
+        const ranked = this.getIndexer(s, cwd).search(q.q, (id) => {
+          const entry = catalog[id];
+          if (!entry) return scopeBonus; // minimal boost
+          let b = scopeBonus;
+          if (entry.pinned) b += 2;
+          // Recency decay boost (0..2)
+          const updated = new Date(entry.updatedAt).getTime();
+          const ageDays = Math.max(0, (Date.now() - updated) / (1000 * 60 * 60 * 24));
+          const halfLife = 14; // days
+          const recency = 2 * Math.exp(-ageDays / halfLife);
+          b += recency;
+          return b;
+        });
         for (const r of ranked) ids.push({ scope: s, id: r.id, score: r.score });
       } else {
         const st = this.getStore(s, cwd);
@@ -208,11 +223,8 @@ export class MemoryManager {
       items.push(item);
     }
 
-    // Score and sort
-    if (q.q) {
-      const term = q.q.toLowerCase();
-      items.sort((a, b) => this.score(b, term) - this.score(a, term));
-    } else {
+    // If no query term, sort by recency; otherwise preserve ranked order
+    if (!q.q) {
       items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
 
