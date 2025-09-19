@@ -3,6 +3,8 @@ import * as os from 'node:os';
 import { ulid } from './util/ulid.js';
 import { ScopeResolver } from './scope/ScopeResolver.js';
 import { FileStore } from './storage/fileStore.js';
+import { InvertedIndexer } from './storage/Indexer.js';
+import { redactSecrets } from './utils/secretFilter.js';
 import type {
   MemoryItem,
   MemoryItemSummary,
@@ -21,6 +23,7 @@ export class MemoryManager {
 
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, FileStore>> = {};
+  private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
 
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
@@ -28,6 +31,14 @@ export class MemoryManager {
       this.stores[scope] = new FileStore(dir);
     }
     return this.stores[scope]!;
+  }
+
+  private getIndexer(scope: MemoryScope, cwd?: string): InvertedIndexer {
+    if (!this.indexers[scope]) {
+      const dir = this.resolver.getScopeDirectory(scope, cwd);
+      this.indexers[scope] = new InvertedIndexer(path.join(dir, 'index'));
+    }
+    return this.indexers[scope]!;
   }
 
   getProjectInfo(cwd?: string): ProjectInfo {
@@ -53,13 +64,17 @@ export class MemoryManager {
     const store = this.getStore(input.scope);
     const existing = await store.readItem(id);
 
+    // Redact likely secrets from free text/code
+    const redText = redactSecrets(input.text);
+    const redCode = redactSecrets(input.code);
+
     const item: MemoryItem = {
       id,
       type: input.type,
       scope: input.scope,
       title: input.title,
-      text: input.text,
-      code: input.code,
+      text: redText.text,
+      code: redCode.text,
       language: input.language,
       facets: {
         tags: input.facets?.tags || (input as any).tags || [],
@@ -87,7 +102,7 @@ export class MemoryManager {
       },
       security: {
         sensitivity: input.security?.sensitivity || 'private',
-        secretHashRefs: input.security?.secretHashRefs,
+        secretHashRefs: Array.from(new Set([...(input.security?.secretHashRefs || []), ...redText.refs, ...redCode.refs])),
       },
       vectors: input.vectors,
       links: input.links ?? existing?.links,
@@ -97,6 +112,8 @@ export class MemoryManager {
     };
 
     await store.writeItem(item);
+    // Update inverted index
+    this.getIndexer(item.scope).updateItem(item);
     return item.id;
   }
 
@@ -115,12 +132,17 @@ export class MemoryManager {
 
   async delete(id: string, scope?: MemoryScope, cwd?: string): Promise<boolean> {
     if (scope) {
-      return await this.getStore(scope, cwd).deleteItem(id);
+      const ok = await this.getStore(scope, cwd).deleteItem(id);
+      if (ok) this.getIndexer(scope, cwd).removeItem(id);
+      return ok;
     }
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
       const ok = await this.getStore(s, cwd).deleteItem(id);
-      if (ok) return true;
+      if (ok) {
+        this.getIndexer(s, cwd).removeItem(id);
+        return true;
+      }
     }
     return false;
   }
@@ -150,13 +172,19 @@ export class MemoryManager {
 
   async query(q: MemoryQuery, cwd?: string): Promise<MemorySearchResult> {
     const scope = q.scope || 'project';
-    const ids: string[] = [];
+    const ids: Array<{ scope: MemoryScope; id: string; score?: number }> = [];
     const items: MemoryItem[] = [];
 
     const pushScope = async (s: MemoryScope) => {
-      const st = this.getStore(s, cwd);
-      const list = await st.listItems();
-      for (const id of list) ids.push(`${s}:${id}`);
+      if (q.q) {
+        // Use inverted index for term lookup
+        const ranked = this.getIndexer(s, cwd).search(q.q, (id) => 0);
+        for (const r of ranked) ids.push({ scope: s, id: r.id, score: r.score });
+      } else {
+        const st = this.getStore(s, cwd);
+        const list = await st.listItems();
+        for (const id of list) ids.push({ scope: s, id });
+      }
     };
 
     if (scope === 'all') {
@@ -171,8 +199,9 @@ export class MemoryManager {
     }
 
     // Load and filter
-    for (const sid of ids) {
-      const [s, id] = sid.split(':') as [MemoryScope, string];
+    for (const entry of ids) {
+      const s = entry.scope;
+      const id = entry.id;
       const item = await this.getStore(s, cwd).readItem(id);
       if (!item) continue;
       if (!this.filterItem(item, q)) continue;
@@ -305,4 +334,3 @@ export class MemoryManager {
     return true;
   }
 }
-

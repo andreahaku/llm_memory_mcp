@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, renameSync } from 'fs';
 import { readdir } from 'fs/promises';
 import * as path from 'path';
 import type { MemoryItem, MemoryItemSummary, JournalEntry, MemoryConfig } from '../types/Memory.js';
@@ -78,8 +78,12 @@ export class FileStore {
     this.acquireLock('catalog');
 
     try {
-      const itemPath = path.join(this.directory, 'items', `${item.id}.json`);
-      writeFileSync(itemPath, JSON.stringify(item, null, 2));
+      const itemsDir = path.join(this.directory, 'items');
+      const tmpDir = path.join(this.directory, 'tmp');
+      const itemPath = path.join(itemsDir, `${item.id}.json`);
+      const tmpPath = path.join(tmpDir, `${item.id}.json.tmp`);
+      writeFileSync(tmpPath, JSON.stringify(item, null, 2));
+      renameSync(tmpPath, itemPath);
 
       const catalog = this.readCatalog();
       const summary: MemoryItemSummary = {
@@ -188,7 +192,9 @@ export class FileStore {
 
   private writeCatalog(catalog: Record<string, MemoryItemSummary>): void {
     const catalogPath = path.join(this.directory, 'catalog.json');
-    writeFileSync(catalogPath, JSON.stringify(catalog, null, 2));
+    const tmpPath = path.join(this.directory, 'tmp', 'catalog.json.tmp');
+    writeFileSync(tmpPath, JSON.stringify(catalog, null, 2));
+    renameSync(tmpPath, catalogPath);
   }
 
   private appendJournal(entry: JournalEntry): void {
