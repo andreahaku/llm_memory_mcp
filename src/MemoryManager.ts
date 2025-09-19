@@ -27,6 +27,13 @@ export class MemoryManager {
   private stores: Partial<Record<MemoryScope, FileStore>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
 
+  constructor() {
+    // Background journal replay across scopes for fast consistency on startup
+    setImmediate(() => {
+      this.replayAllFromJournal(false).catch(() => {});
+    });
+  }
+
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
@@ -142,9 +149,11 @@ export class MemoryManager {
     };
 
     await store.writeItem(item);
-    // Update inverted index with configurable field weights
+    // Update inverted index asynchronously with configurable field weights
     const rank = this.getRanking(item.scope);
-    this.getIndexer(item.scope).updateItem(item, rank.fieldWeights as any);
+    setImmediate(() => {
+      this.getIndexer(item.scope).updateItem(item, rank.fieldWeights as any);
+    });
     return item.id;
   }
 
@@ -164,16 +173,13 @@ export class MemoryManager {
   async delete(id: string, scope?: MemoryScope, cwd?: string): Promise<boolean> {
     if (scope) {
       const ok = await this.getStore(scope, cwd).deleteItem(id);
-      if (ok) this.getIndexer(scope, cwd).removeItem(id);
+      if (ok) setImmediate(() => this.getIndexer(scope, cwd).removeItem(id));
       return ok;
     }
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
       const ok = await this.getStore(s, cwd).deleteItem(id);
-      if (ok) {
-        this.getIndexer(s, cwd).removeItem(id);
-        return true;
-      }
+      if (ok) { setImmediate(() => this.getIndexer(s, cwd).removeItem(id)); return true; }
     }
     return false;
   }
@@ -410,6 +416,60 @@ export class MemoryManager {
     const rank = this.getRanking(scope);
     indexer.rebuildFromItems(items, rank.fieldWeights as any);
     return { items: items.length };
+  }
+
+  async replayJournal(scope: MemoryScope, cwd?: string, compact?: boolean): Promise<{ items: number; deleted: number }> {
+    const store = this.getStore(scope, cwd);
+    const entries = await store.readJournal();
+    const final = new Map<string, MemoryItem | null>();
+    let deleted = 0;
+    for (const e of entries) {
+      if (e.op === 'upsert' && e.item) {
+        final.set(e.item.id, e.item as MemoryItem);
+      } else if (e.op === 'delete' && e.id) {
+        final.set(e.id, null);
+        deleted++;
+      }
+    }
+    // Build catalog and index from final state
+    const items: MemoryItem[] = [];
+    const catalog: Record<string, MemoryItemSummary> = {} as any;
+    for (const [id, item] of final.entries()) {
+      if (!item) continue;
+      items.push(item);
+      catalog[id] = {
+        id: item.id,
+        type: item.type,
+        scope: item.scope,
+        title: item.title,
+        tags: item.facets.tags,
+        files: item.facets.files,
+        symbols: item.facets.symbols,
+        confidence: item.quality.confidence,
+        pinned: item.quality.pinned,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      };
+      // Ensure item file exists
+      try { store.writeItemFileRaw(item); } catch {}
+    }
+    store.setCatalog(catalog);
+    const indexer = this.getIndexer(scope, cwd);
+    const rank = this.getRanking(scope);
+    indexer.rebuildFromItems(items, rank.fieldWeights as any);
+    if (compact) {
+      const now = new Date().toISOString();
+      const compacted = items.map(it => ({ op: 'upsert', item: it, ts: now, actor: 'compact' } as any));
+      store.replaceJournal(compacted);
+    }
+    return { items: items.length, deleted };
+  }
+
+  async replayAllFromJournal(compact?: boolean, cwd?: string): Promise<Record<MemoryScope, { items: number; deleted: number }>> {
+    const scopes: MemoryScope[] = ['committed', 'local', 'global'];
+    const out: any = {};
+    for (const s of scopes) out[s] = await this.replayJournal(s, cwd, compact);
+    return out;
   }
 
   async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {

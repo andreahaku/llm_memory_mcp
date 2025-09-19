@@ -11,6 +11,7 @@ interface FileLock {
 export class FileStore {
   private directory: string;
   private locks: Map<string, FileLock> = new Map();
+  private pendingTimers: Set<NodeJS.Immediate> = new Set();
 
   constructor(directory: string) {
     this.directory = directory;
@@ -75,44 +76,20 @@ export class FileStore {
   }
 
   async writeItem(item: MemoryItem): Promise<void> {
-    this.acquireLock('catalog');
+    // 1) Journal-first
+    const journalEntry: JournalEntry = {
+      op: 'upsert',
+      item,
+      ts: new Date().toISOString(),
+      actor: `llm-memory-mcp@1.0.0`
+    };
+    this.appendJournal(journalEntry);
 
-    try {
-      const itemsDir = path.join(this.directory, 'items');
-      const tmpDir = path.join(this.directory, 'tmp');
-      const itemPath = path.join(itemsDir, `${item.id}.json`);
-      const tmpPath = path.join(tmpDir, `${item.id}.json.tmp`);
-      writeFileSync(tmpPath, JSON.stringify(item, null, 2));
-      renameSync(tmpPath, itemPath);
+    // 2) Atomic item write
+    this.writeItemFileRaw(item);
 
-      const catalog = this.readCatalog();
-      const summary: MemoryItemSummary = {
-        id: item.id,
-        type: item.type,
-        scope: item.scope,
-        title: item.title,
-        tags: item.facets.tags,
-        files: item.facets.files,
-        symbols: item.facets.symbols,
-        confidence: item.quality.confidence,
-        pinned: item.quality.pinned,
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt
-      };
-      catalog[item.id] = summary;
-      this.writeCatalog(catalog);
-
-      const journalEntry: JournalEntry = {
-        op: 'upsert',
-        item,
-        ts: new Date().toISOString(),
-        actor: `llm-memory-mcp@1.0.0`
-      };
-      this.appendJournal(journalEntry);
-
-    } finally {
-      this.releaseLock('catalog');
-    }
+    // 3) Async catalog update
+    this.scheduleCatalogUpsert(item);
   }
 
   async readItem(id: string): Promise<MemoryItem | null> {
@@ -145,33 +122,28 @@ export class FileStore {
   }
 
   async deleteItem(id: string): Promise<boolean> {
-    this.acquireLock('catalog');
+    const itemPath = path.join(this.directory, 'items', `${id}.json`);
 
-    try {
-      const itemPath = path.join(this.directory, 'items', `${id}.json`);
-
-      if (!existsSync(itemPath)) {
-        return false;
-      }
-
-      unlinkSync(itemPath);
-
-      const catalog = this.readCatalog();
-      delete catalog[id];
-      this.writeCatalog(catalog);
-
-      const journalEntry: JournalEntry = {
-        op: 'delete',
-        id,
-        ts: new Date().toISOString(),
-        actor: `llm-memory-mcp@1.0.0`
-      };
-      this.appendJournal(journalEntry);
-
-      return true;
-    } finally {
-      this.releaseLock('catalog');
+    if (!existsSync(itemPath)) {
+      return false;
     }
+
+    // Journal-first
+    const journalEntry: JournalEntry = {
+      op: 'delete',
+      id,
+      ts: new Date().toISOString(),
+      actor: `llm-memory-mcp@1.0.0`
+    };
+    this.appendJournal(journalEntry);
+
+    // Delete file
+    unlinkSync(itemPath);
+
+    // Async catalog update
+    this.scheduleCatalogDelete(id);
+
+    return true;
   }
 
   readCatalog(): Record<string, MemoryItemSummary> {
@@ -195,6 +167,77 @@ export class FileStore {
     const tmpPath = path.join(this.directory, 'tmp', 'catalog.json.tmp');
     writeFileSync(tmpPath, JSON.stringify(catalog, null, 2));
     renameSync(tmpPath, catalogPath);
+  }
+
+  private scheduleCatalogUpsert(item: MemoryItem): void {
+    const t = setImmediate(() => {
+      this.acquireLock('catalog');
+      try {
+        const catalog = this.readCatalog();
+        const summary: MemoryItemSummary = {
+          id: item.id,
+          type: item.type,
+          scope: item.scope,
+          title: item.title,
+          tags: item.facets.tags,
+          files: item.facets.files,
+          symbols: item.facets.symbols,
+          confidence: item.quality.confidence,
+          pinned: item.quality.pinned,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt
+        };
+        catalog[item.id] = summary;
+        this.writeCatalog(catalog);
+      } finally {
+        this.releaseLock('catalog');
+        this.pendingTimers.delete(t);
+      }
+    });
+    this.pendingTimers.add(t);
+  }
+
+  private scheduleCatalogDelete(id: string): void {
+    const t = setImmediate(() => {
+      this.acquireLock('catalog');
+      try {
+        const catalog = this.readCatalog();
+        delete catalog[id];
+        this.writeCatalog(catalog);
+      } finally {
+        this.releaseLock('catalog');
+        this.pendingTimers.delete(t);
+      }
+    });
+    this.pendingTimers.add(t);
+  }
+
+  // Raw item write without journaling or catalog change (used by journal replay)
+  writeItemFileRaw(item: MemoryItem): void {
+    const itemsDir = path.join(this.directory, 'items');
+    const tmpDir = path.join(this.directory, 'tmp');
+    const itemPath = path.join(itemsDir, `${item.id}.json`);
+    const tmpPath = path.join(tmpDir, `${item.id}.json.tmp`);
+    writeFileSync(tmpPath, JSON.stringify(item, null, 2));
+    renameSync(tmpPath, itemPath);
+  }
+
+  // Overwrite catalog in one go (used by journal replay)
+  setCatalog(catalog: Record<string, MemoryItemSummary>): void {
+    this.acquireLock('catalog');
+    try {
+      this.writeCatalog(catalog);
+    } finally {
+      this.releaseLock('catalog');
+    }
+  }
+
+  replaceJournal(entries: JournalEntry[]): void {
+    const journalPath = path.join(this.directory, 'journal.ndjson');
+    const tmp = path.join(this.directory, 'tmp', 'journal.ndjson.tmp');
+    const content = entries.map(e => JSON.stringify(e)).join('\n') + (entries.length ? '\n' : '');
+    writeFileSync(tmp, content);
+    renameSync(tmp, journalPath);
   }
 
   async rebuildCatalog(): Promise<void> {

@@ -180,6 +180,20 @@ class LLMKnowledgeBaseServer {
             additionalProperties: false,
           },
         },
+        {
+          name: 'maintenance.replay',
+          description: 'Replay journal to rebuild catalog/index (optionally compact)',
+          inputSchema: {
+            type: 'object',
+            properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] }, compact: { type: 'boolean' } },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'maintenance.compact',
+          description: 'Compact journal by writing current state and truncating journal',
+          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
+        },
       ],
     }));
 
@@ -294,6 +308,37 @@ class LLMKnowledgeBaseServer {
               return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
             }
             const res = await this.memory.rebuildScope(scope as MemoryScope);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'maintenance.replay': {
+            const scope = (args.scope as string) || 'project';
+            const compact = !!args.compact;
+            if (scope === 'all') {
+              const res = await this.memory.replayAllFromJournal(compact);
+              return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const committed = await this.memory.replayJournal('committed', undefined, compact);
+              const local = await this.memory.replayJournal('local', undefined, compact);
+              return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
+            }
+            const res = await this.memory.replayJournal(scope as MemoryScope, undefined, compact);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'maintenance.compact': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') {
+              const res = await this.memory.replayAllFromJournal(true);
+              return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const committed = await this.memory.replayJournal('committed', undefined, true);
+              const local = await this.memory.replayJournal('local', undefined, true);
+              return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
+            }
+            const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 

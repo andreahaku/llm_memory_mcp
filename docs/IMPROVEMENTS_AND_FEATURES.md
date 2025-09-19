@@ -4,6 +4,30 @@ This document proposes a comprehensive roadmap to turn this repository into the 
 
 The proposals are designed to remain offline-first, performant, and MCP-compliant, while being practical to implement incrementally.
 
+## Shipped To Date
+
+- Memory-first server
+  - Replaced legacy kb.* with memory.* tools (upsert/get/delete/list/query/link/pin/unpin/tag).
+  - Added project.initCommitted, project.config.get/set, maintenance.rebuild.
+  - New resources: kb://project/info, kb://health, kb://context/pack.
+
+- Storage, indexing, and reliability
+  - Atomic writes for items and catalog via tmp+rename.
+  - Rebuildable catalog and inverted index from on-disk items.
+  - Inverted index with BM25 scoring (doc lengths, idf) and per-field weights.
+  - Secret redaction on ingestion (common API key patterns) with secretHashRefs.
+
+- Ranking and tuning
+  - Scope, pin, and recency boosts integrated into search ranking.
+  - Phrase bonuses and exact-title bonus layered atop BM25 for coding UX.
+  - Per-scope tuning via config.json: fieldWeights, bm25, scopeBonus, pinBonus, recency, phrase.
+
+- Context Packs
+  - memory.contextPack tool and kb://context/pack resource.
+  - Optional snippet filters: snippetLanguages, snippetFilePatterns.
+  - Optional budgets: maxChars and tokenBudget (fast heuristic ~4 chars/token).
+  - Symbol-aware cropping using function name or symbols when ranges are unavailable; windowed cropping when ranges are present.
+
 ## Executive Summary
 
 - Evolve from simple Notes to a typed Memory model with facets, context, links, versions, and vectors.
@@ -19,21 +43,21 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
 
 Key files and responsibilities:
 
-- `src/index.ts` — MCP server exposing tools: `kb.create/read/update/delete/list/search/stats`, `project.info/init`. Uses a simple Note model with scopes: `global` | `project`.
-- `src/KnowledgeManager.ts` — Orchestrates global and project stores, project detection via Git, and simple relevance scoring with title/content/tags.
-- `src/storage/KnowledgeStore.ts` — File-based JSON storage for individual notes and `index.json` (summary). Uses synchronous fs APIs for writes and updates index by reading all notes each time.
-- `src/types/KnowledgeBase.ts` — Simple Note schema with `note|snippet|pattern|config|fact|insight`.
-- Parallel “advanced” structures not yet wired into server:
-  - `src/types/Memory.ts`, `src/storage/fileStore.ts`, `src/scope/ScopeResolver.ts`, `src/paths.ts`, `src/storage/repo.ts` — A richer data model with facets, context, journaling, locks, committed/local/global scopes, and a more complete storage layout (`items/`, `index/`, `journal.ndjson`, `catalog.json`, `locks/`). These are promising building blocks but are not integrated into the running MCP server.
-- Duplication to address:
-  - Two ULID implementations exist: `src/utils/ULID.ts` and `src/util/ulid.ts`.
-  - Two type systems: `KnowledgeBase` vs `Memory`. The server uses `KnowledgeBase`, while the advanced storage types use `Memory`.
+- `src/index.ts` — MCP server exposing memory.* tools, project.* tools, and resources.
+- `src/MemoryManager.ts` — Orchestrates Memory storage/search/ranking, project detection, context packs.
+- `src/storage/fileStore.ts` — File-based storage with journaling (append), catalog, locks, and atomic writes.
+- `src/storage/Indexer.ts` — Inverted index with BM25 and document lengths; atomic persistence; rebuildable.
+- `src/scope/ScopeResolver.ts` — Scope detection and directory layout.
+- `src/types/Memory.ts` — Memory model, queries, context packs, config.
+- Legacy note-based code remains present but is superseded by the memory-first path.
+- Duplication outstanding: two ULID implementations (`src/utils/ULID.ts` and `src/util/ulid.ts`).
 
 Observations:
 
-- Search and list operations depend on scanning many files or ad-hoc index regeneration, which will not scale for large corpora.
-- Synchronous fs operations and `execSync` for Git can block the event loop.
-- The “advanced” Memory layer is not connected to the MCP layer; unifying them unlocks richer features without re-inventing primitives.
+- Inverted index and catalog are now rebuildable; list/search no longer scan items.
+- Ranking is tunable and incorporates useful coding-centric boosts.
+- Journaling exists, but startup replay/compaction is not yet implemented (rebuild is available).
+- ULID duplication and some legacy types remain to be unified.
 
 ## Goals
 
@@ -215,10 +239,10 @@ Phase 6: Deprecate Legacy Surfaces
 
 ## Performance Considerations
 
-- Avoid scanning `items/` for list/search; rely on `catalog.json` for summaries and on `index/` for search.
-- Batch journal replay and index rebuilds; persist index checkpoints.
-- Use async fs APIs and avoid blocking `execSync` in request paths; pre-detect project info at server start and refresh lazily.
-- Cache frequent queries (LRU) keyed by normalized query and scope. Invalidate on journal append.
+- Avoid scanning `items/` for list/search; rely on `catalog.json` for summaries and on `index/` for search. (Done)
+- Batch journal replay and index rebuilds; persist index checkpoints. (Planned)
+- Use async fs APIs and avoid blocking `execSync` in request paths; pre-detect project info at server start and refresh lazily. (Planned)
+- Cache frequent queries (LRU) keyed by normalized query and scope. Invalidate on journal append. (Planned)
 
 ## Testing Strategy
 
@@ -237,10 +261,10 @@ Phase 6: Deprecate Legacy Surfaces
 
 ## Quick Wins (Low Effort, High Impact)
 
-- Unify ULID implementation and types; remove dead/duplicate code.
-- Switch write paths to atomic temp-write + rename.
-- Add a `catalog.json`-first listing path to eliminate repeated full scans.
-- Add `kb://health` resource to improve troubleshooting.
+- Unify ULID implementation and types; remove dead/duplicate code. (Planned)
+- Switch write paths to atomic temp-write + rename. (Done)
+- Add a `catalog.json`-first listing path to eliminate repeated full scans. (Done)
+- Add `kb://health` resource to improve troubleshooting. (Done)
 
 ## Stretch Ideas
 
@@ -248,8 +272,8 @@ Phase 6: Deprecate Legacy Surfaces
 - On-device embedding quantization for small footprint ANN indices.
 - Lightweight web UI that can be served locally from the MCP process on a random port for browsing memory.
 - Language-aware tokenization for better BM25 scores (e.g., split on camelCase, snake_case, and symbols).
+- Token-accurate budgeting adapters per model provider (optional, pluggable) for context packs.
 
 ## Closing
 
 The repository already contains the building blocks for a robust Memory system (ScopeResolver, FileStore, Memory types). By wiring these into the MCP layer, adding hybrid search, and standardizing the on-disk layout with journaling and indexing, we can deliver best-in-class local and shared LLM memory that remains portable, private, and fast.
-
