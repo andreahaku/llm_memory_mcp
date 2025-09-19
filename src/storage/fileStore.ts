@@ -11,7 +11,10 @@ interface FileLock {
 export class FileStore {
   private directory: string;
   private locks: Map<string, FileLock> = new Map();
-  private pendingTimers: Set<NodeJS.Immediate> = new Set();
+  // Debounced catalog update state
+  private pendingUpserts: Map<string, MemoryItemSummary> = new Map();
+  private pendingDeletes: Set<string> = new Set();
+  private flushTimer: NodeJS.Timeout | null = null;
   private compactionHook?: () => void;
   private compactThreshold = 500;
   private journalAppendCount = 0;
@@ -173,46 +176,48 @@ export class FileStore {
   }
 
   private scheduleCatalogUpsert(item: MemoryItem): void {
-    const t = setImmediate(() => {
-      this.acquireLock('catalog');
-      try {
-        const catalog = this.readCatalog();
-        const summary: MemoryItemSummary = {
-          id: item.id,
-          type: item.type,
-          scope: item.scope,
-          title: item.title,
-          tags: item.facets.tags,
-          files: item.facets.files,
-          symbols: item.facets.symbols,
-          confidence: item.quality.confidence,
-          pinned: item.quality.pinned,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt
-        };
-        catalog[item.id] = summary;
-        this.writeCatalog(catalog);
-      } finally {
-        this.releaseLock('catalog');
-        this.pendingTimers.delete(t);
-      }
-    });
-    this.pendingTimers.add(t);
+    const summary: MemoryItemSummary = {
+      id: item.id,
+      type: item.type,
+      scope: item.scope,
+      title: item.title,
+      tags: item.facets.tags,
+      files: item.facets.files,
+      symbols: item.facets.symbols,
+      confidence: item.quality.confidence,
+      pinned: item.quality.pinned,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt
+    };
+    this.pendingDeletes.delete(item.id);
+    this.pendingUpserts.set(item.id, summary);
+    this.debounceFlushCatalog();
   }
 
   private scheduleCatalogDelete(id: string): void {
-    const t = setImmediate(() => {
+    this.pendingUpserts.delete(id);
+    this.pendingDeletes.add(id);
+    this.debounceFlushCatalog();
+  }
+
+  private debounceFlushCatalog(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
       this.acquireLock('catalog');
       try {
         const catalog = this.readCatalog();
-        delete catalog[id];
+        // Apply deletes first
+        for (const id of this.pendingDeletes) delete catalog[id];
+        // Apply upserts
+        for (const [id, sum] of this.pendingUpserts) catalog[id] = sum;
+        this.pendingDeletes.clear();
+        this.pendingUpserts.clear();
         this.writeCatalog(catalog);
       } finally {
         this.releaseLock('catalog');
-        this.pendingTimers.delete(t);
       }
-    });
-    this.pendingTimers.add(t);
+    }, 100);
   }
 
   // Raw item write without journaling or catalog change (used by journal replay)
