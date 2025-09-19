@@ -562,6 +562,7 @@ export class MemoryManager {
       store.replaceJournal(compacted);
       const checksum = this.computeScopeChecksum(scope);
       store.writeSnapshotMeta({ lastTs: now, checksum });
+      store.writeStateOk({ ts: now, checksum });
     }
     return { items: items.length, deleted };
   }
@@ -588,6 +589,21 @@ export class MemoryManager {
   snapshotAll(cwd?: string): void {
     const ts = new Date().toISOString();
     for (const s of ['committed','local','global'] as MemoryScope[]) this.snapshotScope(s, ts, cwd);
+  }
+
+  verifyScope(scope: MemoryScope, cwd?: string): { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string } {
+    const store = this.getStore(scope, cwd);
+    const snap = store.readSnapshotMeta();
+    const checksum = this.computeScopeChecksum(scope, cwd);
+    const snapshotChecksum = snap?.checksum;
+    const ok = !!checksum && !!snapshotChecksum && checksum === snapshotChecksum;
+    return { ok, checksum, snapshotChecksum, lastTs: snap?.lastTs };
+  }
+
+  verifyAll(cwd?: string): Record<MemoryScope, { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string }> {
+    const out: any = {};
+    for (const s of ['committed','local','global'] as MemoryScope[]) out[s] = this.verifyScope(s, cwd);
+    return out;
   }
 
   private async startupFastRecover(): Promise<void> {
@@ -640,6 +656,7 @@ export class MemoryManager {
         if (last) {
           const checksum = this.computeScopeChecksum(s);
           store.writeSnapshotMeta({ lastTs: last, checksum });
+          store.writeStateOk({ ts: new Date().toISOString(), checksum });
         }
       } catch {
         // ignore per-scope failures at startup
@@ -814,6 +831,10 @@ export class MemoryManager {
 
   removeVector(scope: MemoryScope, id: string, cwd?: string): void {
     this.getVectorIndex(scope, cwd).remove(id);
+  }
+
+  importVectorsBulk(scope: MemoryScope, items: Array<{ id: string; vector: number[] }>, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {
+    return this.getVectorIndex(scope, cwd).setBulk(items);
   }
 
   async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {

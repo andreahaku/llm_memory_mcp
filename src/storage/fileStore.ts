@@ -360,6 +360,25 @@ export class FileStore {
     renameSync(tmp, p);
   }
 
+  writeStateOk(meta: { ts: string; checksum?: string }): void {
+    const dir = path.join(this.directory, 'index');
+    const p = path.join(dir, 'state-ok.json');
+    const tmp = p + '.tmp';
+    writeFileSync(tmp, JSON.stringify(meta, null, 2));
+    renameSync(tmp, p);
+  }
+
+  readStateOk(): { ts?: string; checksum?: string } | null {
+    const p = path.join(this.directory, 'index', 'state-ok.json');
+    if (!existsSync(p)) return null;
+    try {
+      const data = readFileSync(p, 'utf8');
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+
   readConfig(): MemoryConfig | null {
     const configPath = path.join(this.directory, 'config.json');
 

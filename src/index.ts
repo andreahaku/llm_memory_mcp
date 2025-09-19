@@ -72,6 +72,19 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'vectors.importBulk',
+          description: 'Bulk import vectors for items (enforces consistent dimension)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed'] },
+              items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, vector: { type: 'array', items: { type: 'number' } } }, required: ['id','vector'] } }
+            },
+            required: ['scope','items'],
+            additionalProperties: false
+          },
+        },
+        {
           name: 'vectors.remove',
           description: 'Remove a vector embedding for an item',
           inputSchema: {
@@ -237,6 +250,11 @@ class LLMKnowledgeBaseServer {
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
         {
+          name: 'maintenance.verify',
+          description: 'Recompute checksum and compare with snapshot state; report consistency',
+          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
+        },
+        {
           name: 'maintenance.compact.now',
           description: 'Trigger immediate compaction for a scope (alias of maintenance.compact)',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
@@ -325,6 +343,12 @@ class LLMKnowledgeBaseServer {
             const scope = args.scope as MemoryScope;
             this.memory.removeVector(scope, args.id as string);
             return { content: [{ type: 'text', text: 'vectors.remove: ok' }] };
+          }
+
+          case 'vectors.importBulk': {
+            const scope = args.scope as MemoryScope;
+            const res = this.memory.importVectorsBulk(scope, args.items as Array<{ id: string; vector: number[] }>);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
           case 'memory.contextPack': {
@@ -432,6 +456,21 @@ class LLMKnowledgeBaseServer {
             if (scope === 'project') { this.memory.snapshotProject(); return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scopes: ['committed','local'] }, null, 2) }] }; }
             this.memory.snapshotScope(scope as MemoryScope);
             return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scope }, null, 2) }] };
+          }
+
+          case 'maintenance.verify': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') {
+              const res = this.memory.verifyAll();
+              return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const committed = this.memory.verifyScope('committed');
+              const local = this.memory.verifyScope('local');
+              return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
+            }
+            const res = this.memory.verifyScope(scope as MemoryScope);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
           default:
