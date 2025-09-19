@@ -85,6 +85,20 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'vectors.importJsonl',
+          description: 'Bulk import vectors from JSONL file; optional dimension override',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed'] },
+              path: { type: 'string' },
+              dim: { type: 'number' }
+            },
+            required: ['scope','path'],
+            additionalProperties: false
+          },
+        },
+        {
           name: 'vectors.remove',
           description: 'Remove a vector embedding for an item',
           inputSchema: {
@@ -259,6 +273,11 @@ class LLMKnowledgeBaseServer {
           description: 'Trigger immediate compaction for a scope (alias of maintenance.compact)',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
+        {
+          name: 'maintenance.compactSnapshot',
+          description: 'One-click compaction + snapshot for fast recovery',
+          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
+        },
       ],
     }));
 
@@ -348,6 +367,13 @@ class LLMKnowledgeBaseServer {
           case 'vectors.importBulk': {
             const scope = args.scope as MemoryScope;
             const res = this.memory.importVectorsBulk(scope, args.items as Array<{ id: string; vector: number[] }>);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'vectors.importJsonl': {
+            const scope = args.scope as MemoryScope;
+            const dim = args.dim as number | undefined;
+            const res = this.memory.importVectorsFromJsonl(scope, args.path as string, dim);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
@@ -471,6 +497,23 @@ class LLMKnowledgeBaseServer {
             }
             const res = this.memory.verifyScope(scope as MemoryScope);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'maintenance.compactSnapshot': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') {
+              const res = await this.memory.replayAllFromJournal(true);
+              this.memory.snapshotAll();
+              return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const res = await this.memory.replayAllFromJournal(true);
+              this.memory.snapshotProject();
+              return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
+            }
+            const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
+            this.memory.snapshotScope(scope as MemoryScope);
+            return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
           }
 
           default:

@@ -62,10 +62,15 @@ export class VectorIndex {
     this.persist();
   }
 
-  setBulk(items: Array<{ id: string; vector: number[] }>): { ok: number; skipped: Array<{ id: string; reason: string }> } {
+  setBulk(items: Array<{ id: string; vector: number[] }>, dimOverride?: number): { ok: number; skipped: Array<{ id: string; reason: string }> } {
     this.ensure();
     const skipped: Array<{ id: string; reason: string }> = [];
     let ok = 0;
+    if (dimOverride != null) {
+      if (dimOverride <= 0) return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: 'invalid override dim' })) };
+      if (!this.meta.dim) this.meta.dim = dimOverride;
+      if (this.meta.dim !== dimOverride) return { ok: 0, skipped: items.map(i => ({ id: i.id, reason: `override dim ${dimOverride} != existing ${this.meta.dim}` })) };
+    }
     for (const it of items) {
       try { this.set(it.id, it.vector); ok++; } catch (e: any) { skipped.push({ id: it.id, reason: e?.message || 'invalid' }); }
     }

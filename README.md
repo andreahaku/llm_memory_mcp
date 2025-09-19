@@ -92,6 +92,8 @@ Initialize committed scope in current project:
 - memory.tag — Add/remove tags
 - vectors.set — Set/update an item embedding (for hybrid search)
 - vectors.remove — Remove an item embedding
+- vectors.importBulk — Bulk import vectors (same dimension enforced)
+- vectors.importJsonl — Bulk import vectors from JSONL file; optional dim override
 - project.info — Project root, repoId, committed status
 - project.initCommitted — Create `.llm-memory` in repo
 - project.config.get — Read `config.json` for a scope
@@ -100,6 +102,9 @@ Initialize committed scope in current project:
 - maintenance.replay — Replay journal; optional compaction
 - maintenance.compact — Compact journal
 - maintenance.compact.now — Trigger immediate compaction
+- maintenance.compactSnapshot — One-click compaction + snapshot
+- maintenance.snapshot — Write snapshot meta (lastTs + checksum)
+- maintenance.verify — Verify current checksum vs snapshot and state-ok markers
 
 Resources
 - kb://project/info — Project info + recent items
@@ -194,6 +199,8 @@ interface MemoryConfig {
   maintenance?: {
     compactEvery?: number;          // compact after N journal appends (default: 500)
     compactIntervalMs?: number;     // time-based compaction (default: 24h)
+    snapshotIntervalMs?: number;    // time-based snapshot (default: 24h)
+    indexFlush?: { maxOps?: number; maxMs?: number }; // index scheduler flush thresholds
   };
 }
 ```
@@ -251,6 +258,17 @@ Enable hybrid search via config (per scope) and provide vectors for items and qu
 
 The server blends BM25 and cosine scores per configured weights, then applies boosts and phrase/title bonuses.
 
+Bulk vector import (JSONL)
+- Prepare a JSONL file where each line is: {"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
+- Import with optional dimension override:
+```json
+{ "name": "vectors.importJsonl", "arguments": { "scope": "local", "path": "/abs/path/vectors.jsonl", "dim": 768 } }
+```
+Or pass items inline:
+```json
+{ "name": "vectors.importBulk", "arguments": { "scope": "local", "items": [{"id":"01A","vector":[0.1,0.2]},{"id":"01B","vector":[0.0,0.3]}] } }
+```
+
 ## Context Packs
 
 Build an IDE-ready pack of code snippets, facts, configs, and patterns, tuned for JS/TS:
@@ -285,6 +303,13 @@ Per-scope order/caps are configurable in config.json under `contextPack`.
   - `maintenance.replay` — replay journal; optional compact
   - `maintenance.compact` — compact scope(s)
   - `maintenance.compact.now` — immediate compaction
+  - `maintenance.compactSnapshot` — compaction + snapshot in one step
+  - `maintenance.snapshot` — write snapshot meta (for fast tail replay)
+  - `maintenance.verify` — recompute checksum and compare to snapshot/state-ok
+
+State-ok markers
+- After successful compaction and startup tail replay, the server writes `index/state-ok.json` containing the last verified checksum and timestamp.
+- `maintenance.verify` reports whether current checksum matches both snapshot and state-ok markers.
 
 ## Secret Redaction
 
@@ -385,4 +410,14 @@ Manual test:
 - Compact journals when needed
 ```json
 { "name": "maintenance.compact.now", "arguments": { "scope": "project" } }
+```
+
+- One-click compact + snapshot
+```json
+{ "name": "maintenance.compactSnapshot", "arguments": { "scope": "all" } }
+```
+
+- Verify on-disk state vs snapshot/state-ok
+```json
+{ "name": "maintenance.verify", "arguments": { "scope": "project" } }
 ```

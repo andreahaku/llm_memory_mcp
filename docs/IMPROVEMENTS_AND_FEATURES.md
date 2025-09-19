@@ -21,6 +21,10 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
     - Threshold-based (maintenance.compactEvery; default: 500)
     - Time-based (maintenance.compactIntervalMs; default: 24h)
     - Manual: maintenance.replay, maintenance.compact, maintenance.compact.now
+  - Snapshots and verification:
+    - Snapshot meta (lastTs + checksum) for fast tail replay
+    - state-ok marker written after verified consistency
+    - maintenance.snapshot to force snapshot; maintenance.verify to check snapshot/state-ok vs current
 
 - Ranking and tuning
   - Scope, pin, and recency boosts integrated into search ranking.
@@ -29,6 +33,7 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
   - Hybrid vector search (optional) with weighted blending:
     - ranking.hybrid { enabled, wBM25, wVec, model }
     - vectors.set / vectors.remove tools; vector store in index/vectors.json
+    - Bulk import vectors: vectors.importBulk and vectors.importJsonl (JSONL), with dimension enforcement
   - LRU query cache; invalidation on writes/compaction.
 
 - Context Packs
@@ -207,6 +212,11 @@ New Resources:
 - `kb://health` — Status, index freshness, journal tail.
 - `kb://context/pack?q=...` — Convenience URI to fetch a context pack.
   - Supports query args: scope, k, maxChars, tokenBudget, snippetLanguages, snippetFilePatterns.
+  
+Additional Tools:
+- `vectors.importBulk` / `vectors.importJsonl` — Bulk vector import (dimension-checked)
+- `maintenance.snapshot` / `maintenance.verify` — Snapshot and verify on-disk consistency
+- `maintenance.compactSnapshot` — One-click compaction + snapshot
 
 ## Storage Layout (Committed/Local/Global)
 
@@ -226,6 +236,7 @@ Proposed standard layout (already partially present in `ScopeResolver` and `File
 Notes:
 - `catalog.json` enables O(1) summary listing and cheap filtering (type/scope/pinned) before reading full items.
 - `index/` stores token -> posting lists (and optional vector ANN index). Rebuilds are possible by replaying `journal.ndjson`.
+ - Snapshots store lastTs + checksum; state-ok records last verified checksum.
 
 ## Migration Plan
 

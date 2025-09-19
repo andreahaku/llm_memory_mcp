@@ -594,10 +594,13 @@ export class MemoryManager {
   verifyScope(scope: MemoryScope, cwd?: string): { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string } {
     const store = this.getStore(scope, cwd);
     const snap = store.readSnapshotMeta();
+    const state = store.readStateOk();
     const checksum = this.computeScopeChecksum(scope, cwd);
     const snapshotChecksum = snap?.checksum;
+    const stateChecksum = state?.checksum;
     const ok = !!checksum && !!snapshotChecksum && checksum === snapshotChecksum;
-    return { ok, checksum, snapshotChecksum, lastTs: snap?.lastTs };
+    const okState = !!checksum && !!stateChecksum && checksum === stateChecksum;
+    return { ok, checksum, snapshotChecksum, lastTs: snap?.lastTs, okState } as any;
   }
 
   verifyAll(cwd?: string): Record<MemoryScope, { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string }> {
@@ -835,6 +838,27 @@ export class MemoryManager {
 
   importVectorsBulk(scope: MemoryScope, items: Array<{ id: string; vector: number[] }>, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {
     return this.getVectorIndex(scope, cwd).setBulk(items);
+  }
+
+  importVectorsFromJsonl(scope: MemoryScope, filePath: string, dimOverride?: number, cwd?: string): { ok: number; skipped: Array<{ id: string; reason: string }> } {
+    const fsmod = require('node:fs');
+    try {
+      const data = fsmod.readFileSync(filePath, 'utf8');
+      const lines = data.split(/\r?\n/).filter((l: string) => l.trim().length > 0);
+      const items: Array<{ id: string; vector: number[] }> = [];
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj && typeof obj.id === 'string' && Array.isArray(obj.vector)) {
+            items.push({ id: obj.id, vector: obj.vector as number[] });
+          }
+        } catch {}
+      }
+      const res = this.getVectorIndex(scope, cwd).setBulk(items, dimOverride);
+      return res;
+    } catch (e: any) {
+      return { ok: 0, skipped: [{ id: 'ALL', reason: e?.message || 'read failed' }] };
+    }
   }
 
   async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {
