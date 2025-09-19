@@ -86,18 +86,25 @@ Initialize committed scope in current project:
 - memory.delete — Delete by id
 - memory.list — List summaries (scope: global|local|committed|project|all)
 - memory.query — Ranked search with filters and top-k
+- memory.contextPack — IDE-ready context pack (see Context Packs below)
 - memory.link — Link items (refines|duplicates|depends|fixes|relates)
 - memory.pin / memory.unpin — Pin/unpin for ranking
 - memory.tag — Add/remove tags
+- vectors.set — Set/update an item embedding (for hybrid search)
+- vectors.remove — Remove an item embedding
 - project.info — Project root, repoId, committed status
 - project.initCommitted — Create `.llm-memory` in repo
 - project.config.get — Read `config.json` for a scope
 - project.config.set — Write `config.json` for a scope
 - maintenance.rebuild — Rebuild catalog/index from items on disk
+- maintenance.replay — Replay journal; optional compaction
+- maintenance.compact — Compact journal
+- maintenance.compact.now — Trigger immediate compaction
 
 Resources
 - kb://project/info — Project info + recent items
 - kb://health — Minimal health/status
+- kb://context/pack — Build a context pack; supports URI query args
 
 ## Memory Item (shape)
 
@@ -178,6 +185,15 @@ interface MemoryConfig {
     pinBonus?: number;
     recency?: { halfLifeDays?: number; scale?: number };
     phrase?: { bonus?: number; exactTitleBonus?: number };
+    hybrid?: { enabled?: boolean; wBM25?: number; wVec?: number; model?: string };
+  };
+  contextPack?: {
+    order?: Array<'snippets'|'facts'|'patterns'|'configs'>;
+    caps?: { snippets?: number; facts?: number; patterns?: number; configs?: number };
+  };
+  maintenance?: {
+    compactEvery?: number;          // compact after N journal appends (default: 500)
+    compactIntervalMs?: number;     // time-based compaction (default: 24h)
   };
 }
 ```
@@ -204,7 +220,8 @@ Set committed-scope tuning:
         "scopeBonus": { "committed": 2.0, "local": 1.0, "global": 0.3 },
         "pinBonus": 3,
         "recency": { "halfLifeDays": 7, "scale": 2.5 },
-        "phrase": { "bonus": 3, "exactTitleBonus": 8 }
+        "phrase": { "bonus": 3, "exactTitleBonus": 8 },
+        "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" }
       }
     }
   }
@@ -212,6 +229,62 @@ Set committed-scope tuning:
 ```
 
 After changing field weights, run `maintenance.rebuild` for the affected scope to re-apply indexing weights.
+
+## Hybrid Vector Search
+
+Enable hybrid search via config (per scope) and provide vectors for items and query:
+
+1) Enable hybrid and set weights:
+```json
+{ "name": "project.config.set", "arguments": { "scope": "committed", "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" } } } } }
+```
+
+2) Set an item vector:
+```json
+{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05, ...] } }
+```
+
+3) Query with a query embedding:
+```json
+{ "name": "memory.query", "arguments": { "q": "authentication flow", "scope": "project", "k": 20, "vector": [/* query embedding */], "filters": { "type": ["snippet", "pattern"] } } }
+```
+
+The server blends BM25 and cosine scores per configured weights, then applies boosts and phrase/title bonuses.
+
+## Context Packs
+
+Build an IDE-ready pack of code snippets, facts, configs, and patterns, tuned for JS/TS:
+
+- Tool: `memory.contextPack`
+- Resource: `kb://context/pack`
+- Useful args:
+  - q, scope, k
+  - filters (types/tags/language/files)
+  - snippetWindow { before, after }
+  - snippetLanguages: ["typescript","tsx","javascript"]
+  - snippetFilePatterns: ["src/**/*.ts","src/**/*.tsx"]
+  - tokenBudget (approx tokens; ~4 chars/token heuristic) or maxChars
+
+Example:
+```json
+{ "name": "memory.contextPack", "arguments": { "q": "react hooks", "scope": "project", "k": 12, "tokenBudget": 2000, "snippetLanguages": ["typescript","tsx"], "snippetFilePatterns": ["src/**/*.ts","src/**/*.tsx"] } }
+```
+
+URI form:
+```
+kb://context/pack?q=react%20hooks&scope=project&k=12&tokenBudget=2000&snippetLanguages=typescript,tsx&snippetFilePatterns=src/**/*.ts,src/**/*.tsx
+```
+
+Per-scope order/caps are configurable in config.json under `contextPack`.
+
+## Maintenance & Compaction
+
+- Threshold-based compaction: set `maintenance.compactEvery` (default 500). Triggers compaction after N journal appends.
+- Time-based compaction: set `maintenance.compactIntervalMs` (default 24h).
+- Manual controls:
+  - `maintenance.replay` — replay journal; optional compact
+  - `maintenance.compact` — compact scope(s)
+  - `maintenance.compact.now` — immediate compaction
 
 ## Secret Redaction
 
@@ -236,3 +309,80 @@ Manual test:
 - Offline-first; no external services required.
 - For teams, prefer committed scope and stricter committed config.
 
+## Recipes (JS/TS Workflows)
+
+- Save a reusable TypeScript pattern to committed scope
+```json
+{ "name": "memory.upsert", "arguments": {
+  "type": "pattern",
+  "scope": "committed",
+  "title": "React Error Boundary",
+  "language": "typescript",
+  "text": "Wrap subtree with an error boundary component; log and render fallback UI.",
+  "code": "class ErrorBoundary extends React.Component { /* ... */ }",
+  "tags": ["react","error-handling","ts"],
+  "files": ["src/components/ErrorBoundary.tsx"],
+  "symbols": ["ErrorBoundary"]
+} }
+```
+
+- Search by tag across project (local + committed)
+```json
+{ "name": "memory.query", "arguments": {
+  "scope": "project",
+  "k": 20,
+  "filters": { "tags": ["react"] }
+} }
+```
+
+- Build a context pack focused on src/utils and TS/TSX
+```json
+{ "name": "memory.contextPack", "arguments": {
+  "q": "debounce util",
+  "scope": "project",
+  "k": 12,
+  "tokenBudget": 1800,
+  "snippetLanguages": ["typescript","tsx"],
+  "snippetFilePatterns": ["src/utils/**/*.ts","src/utils/**/*.tsx"]
+} }
+```
+
+- Pin a frequently used runbook
+```json
+{ "name": "memory.pin", "arguments": { "id": "01H..." } }
+```
+
+- Merge local → committed (team share) and check status
+```json
+{ "name": "project.sync.status", "arguments": {} }
+```
+```json
+{ "name": "project.sync.merge", "arguments": {} }
+```
+
+- Guard committed scope by sensitivity (team only)
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "committed",
+  "config": { "version": "1", "sharing": { "enabled": true, "sensitivity": "team" } }
+} }
+```
+
+- Enable hybrid search and set vectors (example)
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3 } } }
+} }
+```
+```json
+{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05] } }
+```
+```json
+{ "name": "memory.query", "arguments": { "q": "auth flow", "scope": "project", "k": 20, "vector": [0.08, -0.15, 0.02] } }
+```
+
+- Compact journals when needed
+```json
+{ "name": "maintenance.compact.now", "arguments": { "scope": "project" } }
+```

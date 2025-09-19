@@ -16,17 +16,30 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
   - Rebuildable catalog and inverted index from on-disk items.
   - Inverted index with BM25 scoring (doc lengths, idf) and per-field weights.
   - Secret redaction on ingestion (common API key patterns) with secretHashRefs.
+  - Journal-first writes; async/debounced catalog updates; startup journal replay.
+  - Compaction options:
+    - Threshold-based (maintenance.compactEvery; default: 500)
+    - Time-based (maintenance.compactIntervalMs; default: 24h)
+    - Manual: maintenance.replay, maintenance.compact, maintenance.compact.now
 
 - Ranking and tuning
   - Scope, pin, and recency boosts integrated into search ranking.
   - Phrase bonuses and exact-title bonus layered atop BM25 for coding UX.
   - Per-scope tuning via config.json: fieldWeights, bm25, scopeBonus, pinBonus, recency, phrase.
+  - Hybrid vector search (optional) with weighted blending:
+    - ranking.hybrid { enabled, wBM25, wVec, model }
+    - vectors.set / vectors.remove tools; vector store in index/vectors.json
+  - LRU query cache; invalidation on writes/compaction.
 
 - Context Packs
   - memory.contextPack tool and kb://context/pack resource.
   - Optional snippet filters: snippetLanguages, snippetFilePatterns.
   - Optional budgets: maxChars and tokenBudget (fast heuristic ~4 chars/token).
   - Symbol-aware cropping using function name or symbols when ranges are unavailable; windowed cropping when ranges are present.
+  - Per-scope section order and caps: contextPack { order, caps }.
+
+- Team workflows and policy
+  - project.sync.status and project.sync.merge (local → committed), sensitivity gates for committed writes.
 
 ## Executive Summary
 
@@ -56,7 +69,7 @@ Observations:
 
 - Inverted index and catalog are now rebuildable; list/search no longer scan items.
 - Ranking is tunable and incorporates useful coding-centric boosts.
-- Journaling exists, but startup replay/compaction is not yet implemented (rebuild is available).
+- Journaling, startup replay, and compaction (threshold/time-based/manual) are implemented.
 - ULID duplication and some legacy types remain to be unified.
 
 ## Goals
@@ -186,12 +199,14 @@ New Memory-first tools:
 - `project.initCommitted` — Initialize committed memory structure (idempotent).
 - `project.config.get` / `project.config.set` — Policy and weight tuning.
 - `project.sync.status` / `project.sync.merge` — Team workflows.
+- `vectors.set` / `vectors.remove` — Manage per-item embeddings for hybrid search.
 
 New Resources:
 - `kb://notes/recent` — Keep for compatibility.
 - `kb://project/info` — Keep and expand with repoId/branch/config summary.
 - `kb://health` — Status, index freshness, journal tail.
 - `kb://context/pack?q=...` — Convenience URI to fetch a context pack.
+  - Supports query args: scope, k, maxChars, tokenBudget, snippetLanguages, snippetFilePatterns.
 
 ## Storage Layout (Committed/Local/Global)
 
@@ -241,8 +256,9 @@ Phase 6: Deprecate Legacy Surfaces
 
 - Avoid scanning `items/` for list/search; rely on `catalog.json` for summaries and on `index/` for search. (Done)
 - Batch journal replay and index rebuilds; persist index checkpoints. (Planned)
-- Use async fs APIs and avoid blocking `execSync` in request paths; pre-detect project info at server start and refresh lazily. (Planned)
-- Cache frequent queries (LRU) keyed by normalized query and scope. Invalidate on journal append. (Planned)
+- Use async fs APIs and avoid blocking `execSync` in request paths; pre-detect project info at server start and refresh lazily. (Partially Done)
+- Cache frequent queries (LRU) keyed by normalized query and scope. Invalidate on journal append. (Done)
+- Debounced catalog and index updates to coalesce bursts of writes. (Done)
 
 ## Testing Strategy
 
