@@ -31,6 +31,7 @@ export class MemoryManager {
   private indexUpserts: Partial<Record<MemoryScope, Map<string, MemoryItem>>> = {};
   private indexDeletes: Partial<Record<MemoryScope, Set<string>>> = {};
   private indexTimers: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
+  private compactionIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
     // Background journal replay across scopes for fast consistency on startup
@@ -51,6 +52,14 @@ export class MemoryManager {
         this.replayJournal(scope, cwd, true).catch(() => {});
         this.queryCache.clear();
       }, thr);
+      // Time-based compaction (default daily)
+      const intervalMs = cfg?.maintenance?.compactIntervalMs ?? 24 * 60 * 60 * 1000;
+      if (intervalMs > 0 && !this.compactionIntervals[scope]) {
+        this.compactionIntervals[scope] = setInterval(() => {
+          this.replayJournal(scope, cwd, true).catch(() => {});
+          this.queryCache.clear();
+        }, intervalMs);
+      }
       this.stores[scope] = store;
     }
     return this.stores[scope]!;
