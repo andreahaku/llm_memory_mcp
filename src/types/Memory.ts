@@ -156,4 +156,12 @@ export interface MemoryConfig {
     ttlDays: number;
     maxItems: number;
   };
+  ranking?: {
+    fieldWeights?: { title?: number; text?: number; code?: number; tag?: number };
+    bm25?: { k1?: number; b?: number };
+    scopeBonus?: { global?: number; local?: number; committed?: number };
+    pinBonus?: number;
+    recency?: { halfLifeDays?: number; scale?: number };
+    phrase?: { bonus?: number; exactTitleBonus?: number };
+  };
 }

@@ -41,6 +41,34 @@ export class MemoryManager {
     return this.indexers[scope]!;
   }
 
+  private getRanking(scope: MemoryScope): {
+    fieldWeights: { title: number; text: number; code: number; tag: number };
+    bm25: { k1: number; b: number };
+    scopeBonus: Record<MemoryScope, number>;
+    pinBonus: number;
+    recency: { halfLifeDays: number; scale: number };
+    phrase: { bonus: number; exactTitleBonus: number };
+  } {
+    const cfg = this.readConfig(scope) || undefined;
+    const r = cfg?.ranking || {};
+    const fieldWeights = {
+      title: r.fieldWeights?.title ?? 5,
+      text: r.fieldWeights?.text ?? 2,
+      code: r.fieldWeights?.code ?? 1.5,
+      tag: r.fieldWeights?.tag ?? 3,
+    };
+    const bm25 = { k1: r.bm25?.k1 ?? 1.5, b: r.bm25?.b ?? 0.75 };
+    const scopeBonus = {
+      committed: r.scopeBonus?.committed ?? 1.5,
+      local: r.scopeBonus?.local ?? 1.0,
+      global: r.scopeBonus?.global ?? 0.5,
+    } as Record<MemoryScope, number>;
+    const pinBonus = r.pinBonus ?? 2;
+    const recency = { halfLifeDays: r.recency?.halfLifeDays ?? 14, scale: r.recency?.scale ?? 2 };
+    const phrase = { bonus: r.phrase?.bonus ?? 2.5, exactTitleBonus: r.phrase?.exactTitleBonus ?? 6 };
+    return { fieldWeights, bm25, scopeBonus, pinBonus, recency, phrase };
+  }
+
   getProjectInfo(cwd?: string): ProjectInfo {
     return this.resolver.detectProject(cwd);
   }
@@ -112,8 +140,9 @@ export class MemoryManager {
     };
 
     await store.writeItem(item);
-    // Update inverted index
-    this.getIndexer(item.scope).updateItem(item);
+    // Update inverted index with configurable field weights
+    const rank = this.getRanking(item.scope);
+    this.getIndexer(item.scope).updateItem(item, rank.fieldWeights as any);
     return item.id;
   }
 
@@ -180,19 +209,19 @@ export class MemoryManager {
         // Preload catalog for boosts (pin, recency)
         const st = this.getStore(s, cwd);
         const catalog = st.readCatalog();
-        const scopeBonus = s === 'committed' ? 1.5 : s === 'local' ? 1 : 0.5;
-        const ranked = this.getIndexer(s, cwd).search(q.q, (id) => {
-          const entry = catalog[id];
-          if (!entry) return scopeBonus; // minimal boost
-          let b = scopeBonus;
-          if (entry.pinned) b += 2;
-          // Recency decay boost (0..2)
-          const updated = new Date(entry.updatedAt).getTime();
-          const ageDays = Math.max(0, (Date.now() - updated) / (1000 * 60 * 60 * 24));
-          const halfLife = 14; // days
-          const recency = 2 * Math.exp(-ageDays / halfLife);
-          b += recency;
-          return b;
+        const rank = this.getRanking(s);
+        const ranked = this.getIndexer(s, cwd).search(q.q, {
+          bm25: rank.bm25,
+          boost: (id) => {
+            const entry = catalog[id];
+            let b = rank.scopeBonus[s];
+            if (!entry) return b;
+            if (entry.pinned) b += rank.pinBonus;
+            const updated = new Date(entry.updatedAt).getTime();
+            const ageDays = Math.max(0, (Date.now() - updated) / (1000 * 60 * 60 * 24));
+            const recency = rank.recency.scale * Math.exp(-ageDays / rank.recency.halfLifeDays);
+            return b + recency;
+          },
         });
         for (const r of ranked) ids.push({ scope: s, id: r.id, score: r.score });
       } else {
@@ -223,8 +252,28 @@ export class MemoryManager {
       items.push(item);
     }
 
-    // If no query term, sort by recency; otherwise preserve ranked order
-    if (!q.q) {
+    if (q.q) {
+      // Apply phrase/exact-title bonuses and re-sort
+      const term = q.q.toLowerCase();
+      const rankById: Record<string, number> = {};
+      for (const e of ids) if (e.score != null) rankById[e.id] = e.score!;
+      const rank = this.getRanking('local'); // phrase weights are global; scope doesn't matter here
+      const scored = items.map(it => {
+        let score = rankById[it.id] || 0;
+        const title = (it.title || '').toLowerCase();
+        const text = (it.text || '').toLowerCase();
+        const code = (it.code || '').toLowerCase();
+        if (title === term) score += rank.phrase.exactTitleBonus;
+        if (title.includes(term)) score += rank.phrase.bonus * 1.5;
+        if (text.includes(term)) score += rank.phrase.bonus;
+        if (code.includes(term)) score += rank.phrase.bonus * 0.75;
+        return { it, score };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      const k = q.k || 50;
+      const chosen = scored.slice(0, k).map(s => s.it);
+      return { items: chosen, total: scored.length, scope, query: q };
+    } else {
       items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
 
@@ -356,7 +405,8 @@ export class MemoryManager {
     }
     await store.rebuildCatalog();
     const indexer = this.getIndexer(scope, cwd);
-    indexer.rebuildFromItems(items);
+    const rank = this.getRanking(scope);
+    indexer.rebuildFromItems(items, rank.fieldWeights as any);
     return { items: items.length };
   }
 

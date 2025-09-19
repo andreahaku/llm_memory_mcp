@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { MemoryItem, MemoryItemSummary } from '../types/Memory.js';
+import type { MemoryItem } from '../types/Memory.js';
 import { tokenize } from '../utils/tokenize.js';
 
 type Postings = Record<string, Record<string, number>>; // token -> id -> tf (weighted)
@@ -26,6 +26,8 @@ export class InvertedIndexer {
     this.metaPath = path.join(indexDir, 'meta.json');
     this.lengthsPath = path.join(indexDir, 'lengths.json');
   }
+
+  private defaultWeights = { title: 5, text: 2, code: 1.5, tag: 3 } as const;
 
   private ensure(): void {
     if (this.loaded) return;
@@ -64,7 +66,7 @@ export class InvertedIndexer {
     fs.renameSync(tmpLen, this.lengthsPath);
   }
 
-  updateItem(item: MemoryItem): void {
+  updateItem(item: MemoryItem, weights?: { title?: number; text?: number; code?: number; tag?: number }): void {
     this.ensure();
     // Remove prior entries for id
     for (const tok of Object.keys(this.postings)) {
@@ -74,6 +76,13 @@ export class InvertedIndexer {
 
     // Compute weighted term frequencies and document length
     let docLen = 0;
+    const w = {
+      title: weights?.title ?? this.defaultWeights.title,
+      text: weights?.text ?? this.defaultWeights.text,
+      code: weights?.code ?? this.defaultWeights.code,
+      tag: weights?.tag ?? this.defaultWeights.tag,
+    };
+
     const add = (text: string | undefined, weight: number) => {
       if (!text) return;
       const toks = tokenize(text);
@@ -84,10 +93,10 @@ export class InvertedIndexer {
       }
     };
 
-    add(item.title, 5);
-    add(item.text, 2);
-    add(item.code, 1.5);
-    for (const tag of item.facets.tags) add(tag, 3);
+    add(item.title, w.title);
+    add(item.text, w.text);
+    add(item.code, w.code);
+    for (const tag of item.facets.tags) add(tag, w.tag);
 
     const existed = this.lengths[item.id] != null;
     this.lengths[item.id] = docLen || 1; // avoid zero length
@@ -117,20 +126,20 @@ export class InvertedIndexer {
     this.persist();
   }
 
-  rebuildFromItems(items: MemoryItem[]): void {
+  rebuildFromItems(items: MemoryItem[], weights?: { title?: number; text?: number; code?: number; tag?: number }): void {
     this.loaded = true;
     this.postings = {};
     this.lengths = {};
     this.meta = { updatedAt: new Date().toISOString(), docCount: 0 };
-    for (const it of items) this.updateItem(it);
+    for (const it of items) this.updateItem(it, weights);
   }
 
-  search(term: string, boost?: (id: string) => number): Array<{ id: string; score: number }> {
+  search(term: string, opts?: { boost?: (id: string) => number; bm25?: { k1?: number; b?: number } }): Array<{ id: string; score: number }> {
     this.ensure();
     const tokens = tokenize(term.toLowerCase());
     const N = Math.max(1, this.meta.docCount || 1);
-    const k1 = 1.5;
-    const b = 0.75;
+    const k1 = opts?.bm25?.k1 ?? 1.5;
+    const b = opts?.bm25?.b ?? 0.75;
     const avgdl = this.averageDocLength();
 
     const scores: Record<string, number> = {};
@@ -146,7 +155,7 @@ export class InvertedIndexer {
         scores[id] = (scores[id] || 0) + score;
       }
     }
-    const arr = Object.entries(scores).map(([id, score]) => ({ id, score: score + (boost ? boost(id) : 0) }));
+    const arr = Object.entries(scores).map(([id, score]) => ({ id, score: score + (opts?.boost ? opts.boost(id) : 0) }));
     arr.sort((a, b) => b.score - a.score);
     return arr;
   }
