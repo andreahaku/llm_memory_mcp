@@ -333,4 +333,25 @@ export class MemoryManager {
     await store.writeItem(item);
     return true;
   }
+
+  async rebuildScope(scope: MemoryScope, cwd?: string): Promise<{ items: number }> {
+    const store = this.getStore(scope, cwd);
+    const ids = await store.listItems();
+    const items: MemoryItem[] = [];
+    for (const id of ids) {
+      const it = await store.readItem(id);
+      if (it) items.push(it);
+    }
+    await store.rebuildCatalog();
+    const indexer = this.getIndexer(scope, cwd);
+    indexer.rebuildFromItems(items);
+    return { items: items.length };
+  }
+
+  async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {
+    const scopes: MemoryScope[] = ['committed', 'local', 'global'];
+    const out: Record<string, { items: number }> = {};
+    for (const s of scopes) out[s] = await this.rebuildScope(s, cwd);
+    return out as Record<MemoryScope, { items: number }>;
+  }
 }

@@ -43,9 +43,13 @@ export class InvertedIndexer {
 
   private persist(): void {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(this.idxPath, JSON.stringify(this.postings));
+    const tmpIdx = this.idxPath + '.tmp';
+    const tmpMeta = this.metaPath + '.tmp';
+    fs.writeFileSync(tmpIdx, JSON.stringify(this.postings));
     this.meta.updatedAt = new Date().toISOString();
-    fs.writeFileSync(this.metaPath, JSON.stringify(this.meta, null, 2));
+    fs.writeFileSync(tmpMeta, JSON.stringify(this.meta, null, 2));
+    fs.renameSync(tmpIdx, this.idxPath);
+    fs.renameSync(tmpMeta, this.metaPath);
   }
 
   updateItem(item: MemoryItem): void {
@@ -81,6 +85,20 @@ export class InvertedIndexer {
     this.persist();
   }
 
+  clear(): void {
+    this.loaded = true;
+    this.postings = {};
+    this.meta = { updatedAt: new Date().toISOString(), docCount: 0 };
+    this.persist();
+  }
+
+  rebuildFromItems(items: MemoryItem[]): void {
+    this.loaded = true;
+    this.postings = {};
+    this.meta = { updatedAt: new Date().toISOString(), docCount: items.length };
+    for (const it of items) this.updateItem(it);
+  }
+
   search(term: string, boost?: (id: string) => number): Array<{ id: string; score: number }> {
     this.ensure();
     const t = term.toLowerCase();
@@ -98,4 +116,3 @@ export class InvertedIndexer {
     return arr;
   }
 }
-

@@ -197,6 +197,34 @@ export class FileStore {
     renameSync(tmpPath, catalogPath);
   }
 
+  async rebuildCatalog(): Promise<void> {
+    this.acquireLock('catalog');
+    try {
+      const catalog: Record<string, MemoryItemSummary> = {};
+      const ids = await this.listItems();
+      for (const id of ids) {
+        const item = await this.readItem(id);
+        if (!item) continue;
+        catalog[id] = {
+          id: item.id,
+          type: item.type,
+          scope: item.scope,
+          title: item.title,
+          tags: item.facets.tags,
+          files: item.facets.files,
+          symbols: item.facets.symbols,
+          confidence: item.quality.confidence,
+          pinned: item.quality.pinned,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        };
+      }
+      this.writeCatalog(catalog);
+    } finally {
+      this.releaseLock('catalog');
+    }
+  }
+
   private appendJournal(entry: JournalEntry): void {
     const journalPath = path.join(this.directory, 'journal.ndjson');
     appendFileSync(journalPath, JSON.stringify(entry) + '\n');

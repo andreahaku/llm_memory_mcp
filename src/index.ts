@@ -152,6 +152,15 @@ class LLMKnowledgeBaseServer {
           description: 'Write memory config to scope',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed'] }, config: { type: 'object' } }, required: ['scope','config'] },
         },
+        {
+          name: 'maintenance.rebuild',
+          description: 'Rebuild catalog and inverted index from on-disk items',
+          inputSchema: {
+            type: 'object',
+            properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } },
+            additionalProperties: false,
+          },
+        },
       ],
     }));
 
@@ -247,6 +256,21 @@ class LLMKnowledgeBaseServer {
             const scope = args.scope as MemoryScope;
             this.memory.writeConfig(scope, args.config as any);
             return { content: [{ type: 'text', text: 'project.config.set: ok' }] };
+          }
+
+          case 'maintenance.rebuild': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') {
+              const res = await this.memory.rebuildAll();
+              return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const committed = await this.memory.rebuildScope('committed');
+              const local = await this.memory.rebuildScope('local');
+              return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
+            }
+            const res = await this.memory.rebuildScope(scope as MemoryScope);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
           default:
