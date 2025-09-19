@@ -5,6 +5,7 @@ import { ScopeResolver } from './scope/ScopeResolver.js';
 import { FileStore } from './storage/fileStore.js';
 import { InvertedIndexer } from './storage/Indexer.js';
 import { redactSecrets } from './utils/secretFilter.js';
+import { estimateTokens, allowedCharsForTokens } from './utils/tokenEstimate.js';
 import type {
   MemoryItem,
   MemoryItemSummary,
@@ -427,6 +428,7 @@ export class MemoryManager {
     const snippetLanguages = (q as any).snippetLanguages as string[] | undefined;
     const snippetFilePatterns = (q as any).snippetFilePatterns as string[] | undefined;
     const maxChars = (q as any).maxChars as number | undefined;
+    const tokenBudget = (q as any).tokenBudget as number | undefined;
 
     const globs: RegExp[] | undefined = snippetFilePatterns?.map(p => {
       // Convert a simple glob (* and ?) to RegExp
@@ -453,24 +455,40 @@ export class MemoryManager {
 
     // Build snippets under optional budget
     const snippets: MemoryContextPack['snippets'] = [];
-    let remaining = maxChars ?? Number.POSITIVE_INFINITY;
+    let remainingChars = maxChars ?? Number.POSITIVE_INFINITY;
+    let remainingTokens = tokenBudget ?? Number.POSITIVE_INFINITY;
+    const minChunk = 120; // minimal useful snippet (chars)
     const pushWithBudget = (code: string, meta: { language?: string; file?: string; range?: { start: number; end: number } }) => {
-      if (!Number.isFinite(remaining)) {
-        snippets.push({ ...meta, code });
-        return true;
+      // Prefer token budget when provided; fall back to char budget
+      if (isFinite(remainingTokens)) {
+        const allowed = allowedCharsForTokens(remainingTokens);
+        if (code.length <= allowed) {
+          snippets.push({ ...meta, code });
+          remainingTokens = Math.max(0, remainingTokens - estimateTokens(code));
+          return true;
+        } else if (allowed >= minChunk) {
+          const sliced = code.slice(0, Math.max(minChunk, allowed - 3)) + '...';
+          snippets.push({ ...meta, code: sliced });
+          remainingTokens = 0;
+          return false;
+        }
+        return false;
       }
-      const minChunk = 120; // minimal useful snippet
-      if (code.length <= remaining) {
-        snippets.push({ ...meta, code });
-        remaining -= code.length;
-        return true;
-      } else if (remaining >= minChunk) {
-        const sliced = code.slice(0, Math.max(minChunk, remaining - 3)) + '...';
-        snippets.push({ ...meta, code: sliced });
-        remaining -= sliced.length;
-        return false; // budget likely exhausted
+      if (isFinite(remainingChars)) {
+        if (code.length <= remainingChars) {
+          snippets.push({ ...meta, code });
+          remainingChars -= code.length;
+          return true;
+        } else if (remainingChars >= minChunk) {
+          const sliced = code.slice(0, Math.max(minChunk, remainingChars - 3)) + '...';
+          snippets.push({ ...meta, code: sliced });
+          remainingChars = 0;
+          return false;
+        }
+        return false;
       }
-      return false;
+      snippets.push({ ...meta, code });
+      return true;
     };
 
     for (const it of items) {
@@ -492,7 +510,8 @@ export class MemoryManager {
         if (win) code = lines.slice(win.start, win.end).join('\n');
       }
       const ok = pushWithBudget(code, { language: it.language, file: it.context?.file, range: it.context?.range });
-      if (snippets.length >= Math.min(k, 12) || (Number.isFinite(remaining) && remaining <= 0)) break;
+      const budgetEmpty = (isFinite(remainingTokens) && remainingTokens <= 0) || (isFinite(remainingChars) && remainingChars <= 0);
+      if (snippets.length >= Math.min(k, 12) || budgetEmpty) break;
     }
 
     // Facts and configs
@@ -505,34 +524,67 @@ export class MemoryManager {
       if (it.type === 'fact') {
         const t = (it.text || it.title || '').trim();
         if (t) {
-          const s = t.length;
-          if (!Number.isFinite(remaining) || s <= remaining) {
+          if (isFinite(remainingTokens)) {
+            const allowed = allowedCharsForTokens(remainingTokens);
+            if (t.length <= allowed) {
+              facts.push(t);
+              remainingTokens = Math.max(0, remainingTokens - estimateTokens(t));
+            } else if (allowed > 40) {
+              facts.push(t.slice(0, allowed - 3) + '...');
+              remainingTokens = 0;
+            }
+          } else if (isFinite(remainingChars)) {
+            if (t.length <= remainingChars) {
+              facts.push(t);
+              remainingChars -= t.length;
+            } else if (remainingChars > 40) {
+              facts.push(t.slice(0, remainingChars - 3) + '...');
+              remainingChars = 0;
+            }
+          } else {
             facts.push(t);
-            if (Number.isFinite(remaining)) remaining -= s;
-          } else if (remaining > 40) {
-            facts.push(t.slice(0, remaining - 3) + '...');
-            remaining = 0;
           }
         }
       } else if (it.type === 'config') {
         let val = (it.text || it.code || '').trim();
-        if (Number.isFinite(remaining) && val.length > remaining) {
-          if (remaining <= 40) continue;
-          val = val.slice(0, remaining - 3) + '...';
-          remaining = 0;
-        } else if (Number.isFinite(remaining)) {
-          remaining -= val.length;
+        if (isFinite(remainingTokens)) {
+          const allowed = allowedCharsForTokens(remainingTokens);
+          if (val.length > allowed) {
+            if (allowed <= 40) continue;
+            val = val.slice(0, allowed - 3) + '...';
+            remainingTokens = 0;
+          } else {
+            remainingTokens = Math.max(0, remainingTokens - estimateTokens(val));
+          }
+        } else if (isFinite(remainingChars)) {
+          if (val.length > remainingChars) {
+            if (remainingChars <= 40) continue;
+            val = val.slice(0, remainingChars - 3) + '...';
+            remainingChars = 0;
+          } else {
+            remainingChars -= val.length;
+          }
         }
         configs.push({ key: it.title || '', value: val, context: it.context?.file });
       } else if (it.type === 'pattern') {
         let desc = (it.text || '').trim();
-        if (Number.isFinite(remaining) && desc.length > remaining) {
-          if (remaining > 40) {
-            desc = desc.slice(0, remaining - 3) + '...';
-            remaining = 0;
-          } else continue;
-        } else if (Number.isFinite(remaining)) {
-          remaining -= desc.length;
+        if (isFinite(remainingTokens)) {
+          const allowed = allowedCharsForTokens(remainingTokens);
+          if (desc.length > allowed) {
+            if (allowed <= 40) continue;
+            desc = desc.slice(0, allowed - 3) + '...';
+            remainingTokens = 0;
+          } else {
+            remainingTokens = Math.max(0, remainingTokens - estimateTokens(desc));
+          }
+        } else if (isFinite(remainingChars)) {
+          if (desc.length > remainingChars) {
+            if (remainingChars <= 40) continue;
+            desc = desc.slice(0, remainingChars - 3) + '...';
+            remainingChars = 0;
+          } else {
+            remainingChars -= desc.length;
+          }
         }
         patterns.push({ title: it.title || '', description: desc, code: it.code });
       }

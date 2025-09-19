@@ -146,6 +146,7 @@ class LLMKnowledgeBaseServer {
               snippetLanguages: { type: 'array', items: { type: 'string' } },
               snippetFilePatterns: { type: 'array', items: { type: 'string' } },
               maxChars: { type: 'number', description: 'Optional content-length budget for the pack' }
+              , tokenBudget: { type: 'number', description: 'Optional token budget (~4 chars per token heuristic)' }
             },
             additionalProperties: true,
           },
@@ -362,6 +363,7 @@ class LLMKnowledgeBaseServer {
             snippetWindow: undefined,
             // extras carried through via any-cast inside contextPack
             ...(maxChars != null ? { maxChars } : {}),
+            ...(params.tokenBudget ? { tokenBudget: Number(params.tokenBudget) } : {}),
             ...(snippetLanguages ? { snippetLanguages } as any : {}),
             ...(snippetFilePatterns ? { snippetFilePatterns } as any : {}),
           } as any);
