@@ -28,6 +28,9 @@ export class MemoryManager {
   private stores: Partial<Record<MemoryScope, FileStore>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
   private queryCache = new LRU<string, MemorySearchResult>(100);
+  private indexUpserts: Partial<Record<MemoryScope, Map<string, MemoryItem>>> = {};
+  private indexDeletes: Partial<Record<MemoryScope, Set<string>>> = {};
+  private indexTimers: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
     // Background journal replay across scopes for fast consistency on startup
@@ -171,11 +174,7 @@ export class MemoryManager {
 
     await store.writeItem(item);
     this.queryCache.clear();
-    // Update inverted index asynchronously with configurable field weights
-    const rank = this.getRanking(item.scope);
-    setImmediate(() => {
-      this.getIndexer(item.scope).updateItem(item, rank.fieldWeights as any);
-    });
+    this.scheduleIndexUpsert(item.scope, item);
     return item.id;
   }
 
@@ -195,13 +194,13 @@ export class MemoryManager {
   async delete(id: string, scope?: MemoryScope, cwd?: string): Promise<boolean> {
     if (scope) {
       const ok = await this.getStore(scope, cwd).deleteItem(id);
-      if (ok) setImmediate(() => this.getIndexer(scope, cwd).removeItem(id));
+      if (ok) this.scheduleIndexDelete(scope, id);
       return ok;
     }
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
       const ok = await this.getStore(s, cwd).deleteItem(id);
-      if (ok) { setImmediate(() => this.getIndexer(s, cwd).removeItem(id)); return true; }
+      if (ok) { this.scheduleIndexDelete(s, id); return true; }
     }
     return false;
   }
@@ -512,6 +511,38 @@ export class MemoryManager {
     return out;
   }
 
+  // Index update scheduler
+  private scheduleIndexUpsert(scope: MemoryScope, item: MemoryItem): void {
+    if (!this.indexUpserts[scope]) this.indexUpserts[scope] = new Map();
+    if (!this.indexDeletes[scope]) this.indexDeletes[scope] = new Set();
+    this.indexDeletes[scope]!.delete(item.id);
+    this.indexUpserts[scope]!.set(item.id, item);
+    this.ensureIndexTimer(scope);
+  }
+
+  private scheduleIndexDelete(scope: MemoryScope, id: string): void {
+    if (!this.indexUpserts[scope]) this.indexUpserts[scope] = new Map();
+    if (!this.indexDeletes[scope]) this.indexDeletes[scope] = new Set();
+    this.indexUpserts[scope]!.delete(id);
+    this.indexDeletes[scope]!.add(id);
+    this.ensureIndexTimer(scope);
+  }
+
+  private ensureIndexTimer(scope: MemoryScope): void {
+    if (this.indexTimers[scope]) return;
+    this.indexTimers[scope] = setTimeout(() => {
+      delete this.indexTimers[scope];
+      const upserts = this.indexUpserts[scope] || new Map();
+      const deletes = this.indexDeletes[scope] || new Set();
+      this.indexUpserts[scope] = new Map();
+      this.indexDeletes[scope] = new Set();
+      const indexer = this.getIndexer(scope);
+      const weights = this.getRanking(scope).fieldWeights as any;
+      for (const item of upserts.values()) indexer.updateItem(item, weights);
+      for (const id of deletes.values()) indexer.removeItem(id);
+    }, 100);
+  }
+
   async syncStatus(cwd?: string): Promise<{ onlyLocal: MemoryItemSummary[]; onlyCommitted: MemoryItemSummary[]; localNewer: MemoryItemSummary[]; committedNewer: MemoryItemSummary[] }> {
     const localCat = this.getStore('local', cwd).readCatalog();
     const comCat = this.getStore('committed', cwd).readCatalog();
@@ -545,8 +576,8 @@ export class MemoryManager {
       if (rank(item.security.sensitivity) > rank(allowed)) { skipped.push({ id, reason: `sensitivity ${item.security.sensitivity} exceeds ${allowed}` }); continue; }
       try {
         await commitStore.writeItem(item);
-        // Index async
-        setImmediate(() => this.getIndexer('committed').updateItem(item, this.getRanking('committed').fieldWeights as any));
+        // Debounced index update
+        this.scheduleIndexUpsert('committed', item);
         merged.push(id);
       } catch (e: any) {
         skipped.push({ id, reason: e?.message || 'write failed' });
