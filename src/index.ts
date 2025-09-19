@@ -133,6 +133,21 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'memory.contextPack',
+          description: 'Build an IDE-ready context pack from top-k results',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              q: { type: 'string' },
+              scope: { type: 'string', enum: ['global','local','committed','project','all'] },
+              k: { type: 'number' },
+              filters: { type: 'object' },
+              snippetWindow: { type: 'object', properties: { before: { type: 'number' }, after: { type: 'number' } } }
+            },
+            additionalProperties: true,
+          },
+        },
+        {
           name: 'project.info',
           description: 'Get current project information',
           inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -233,6 +248,11 @@ class LLMKnowledgeBaseServer {
             const ok = await this.memory.tag(args.id as string, args.add as string[] | undefined, args.remove as string[] | undefined);
             if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.tag failed for ${args.id}`);
             return { content: [{ type: 'text', text: 'memory.tag: ok' }] };
+          }
+
+          case 'memory.contextPack': {
+            const pack = await this.memory.contextPack(args as any);
+            return { content: [{ type: 'text', text: JSON.stringify(pack, null, 2) }] };
           }
 
           case 'project.info': {

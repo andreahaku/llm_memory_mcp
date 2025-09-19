@@ -14,6 +14,7 @@ import type {
   ProjectInfo,
   MemoryConfig,
   MemoryLink,
+  MemoryContextPack,
 } from './types/Memory.js';
 
 type PartialBy<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
@@ -415,5 +416,73 @@ export class MemoryManager {
     const out: Record<string, { items: number }> = {};
     for (const s of scopes) out[s] = await this.rebuildScope(s, cwd);
     return out as Record<MemoryScope, { items: number }>;
+  }
+
+  async contextPack(q: MemoryQuery, cwd?: string): Promise<MemoryContextPack> {
+    const k = q.k ?? 12;
+    const window = q.snippetWindow ?? { before: 6, after: 6 };
+    const result = await this.query({ ...q, k });
+    const items = result.items;
+
+    // Build snippets
+    const snippets: MemoryContextPack['snippets'] = [];
+    for (const it of items) {
+      const content = (it.code ?? it.text ?? '').trim();
+      if (!content) continue;
+      const lines = content.split(/\r?\n/);
+      let code = content;
+      if (it.context?.range && Number.isFinite(it.context.range.start) && Number.isFinite(it.context.range.end)) {
+        const start = Math.max(0, it.context.range.start - 1 - window.before);
+        const end = Math.min(lines.length, (it.context.range.end) + window.after);
+        code = lines.slice(start, end).join('\n');
+      }
+      snippets.push({
+        language: it.language,
+        file: it.context?.file,
+        range: it.context?.range,
+        code,
+      });
+      if (snippets.length >= Math.min(k, 12)) break;
+    }
+
+    // Facts and configs
+    const facts: string[] = [];
+    const configs: MemoryContextPack['configs'] = [];
+    const patterns: MemoryContextPack['patterns'] = [];
+    const links: MemoryContextPack['links'] = [];
+
+    for (const it of items) {
+      if (it.type === 'fact') {
+        const t = (it.text || it.title || '').trim();
+        if (t) facts.push(t);
+      } else if (it.type === 'config') {
+        configs.push({ key: it.title || '', value: it.text || it.code || '', context: it.context?.file });
+      } else if (it.type === 'pattern') {
+        patterns.push({ title: it.title || '', description: it.text || '', code: it.code });
+      }
+      for (const l of it.links || []) {
+        links.push({ rel: l.rel, to: l.to, title: it.title });
+      }
+    }
+
+    // Hints: collect top tags and titles
+    const tagCount = new Map<string, number>();
+    for (const it of items) for (const t of it.facets.tags) tagCount.set(t, (tagCount.get(t) || 0) + 1);
+    const hints: string[] = Array.from(tagCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([t]) => `tag:${t}`);
+    for (const it of items.slice(0, 5)) if (it.title) hints.push(`title:${it.title}`);
+
+    return {
+      title: q.q || 'Context Pack',
+      hints,
+      snippets,
+      facts,
+      configs,
+      patterns,
+      links,
+      source: { scope: result.scope, ids: items.map(i => i.id) },
+    };
   }
 }
