@@ -58,6 +58,33 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'vectors.set',
+          description: 'Set or update a vector embedding for an item',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              scope: { type: 'string', enum: ['global','local','committed'] },
+              vector: { type: 'array', items: { type: 'number' } }
+            },
+            required: ['id','scope','vector'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'vectors.remove',
+          description: 'Remove a vector embedding for an item',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              scope: { type: 'string', enum: ['global','local','committed'] }
+            },
+            required: ['id','scope'],
+            additionalProperties: false
+          },
+        },
+        {
           name: 'memory.get',
           description: 'Fetch a memory item by id',
           inputSchema: {
@@ -281,6 +308,18 @@ class LLMKnowledgeBaseServer {
             const ok = await this.memory.tag(args.id as string, args.add as string[] | undefined, args.remove as string[] | undefined);
             if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.tag failed for ${args.id}`);
             return { content: [{ type: 'text', text: 'memory.tag: ok' }] };
+          }
+
+          case 'vectors.set': {
+            const scope = args.scope as MemoryScope;
+            await this.memory.setVector(scope, args.id as string, args.vector as number[]);
+            return { content: [{ type: 'text', text: 'vectors.set: ok' }] };
+          }
+
+          case 'vectors.remove': {
+            const scope = args.scope as MemoryScope;
+            this.memory.removeVector(scope, args.id as string);
+            return { content: [{ type: 'text', text: 'vectors.remove: ok' }] };
           }
 
           case 'memory.contextPack': {

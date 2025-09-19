@@ -163,6 +163,7 @@ export interface MemoryConfig {
     pinBonus?: number;
     recency?: { halfLifeDays?: number; scale?: number };
     phrase?: { bonus?: number; exactTitleBonus?: number };
+    hybrid?: { enabled?: boolean; wBM25?: number; wVec?: number; model?: string };
   };
   contextPack?: {
     order?: Array<'snippets' | 'facts' | 'patterns' | 'configs'>;

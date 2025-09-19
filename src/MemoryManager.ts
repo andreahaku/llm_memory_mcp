@@ -4,6 +4,7 @@ import { ulid } from './util/ulid.js';
 import { ScopeResolver } from './scope/ScopeResolver.js';
 import { FileStore } from './storage/fileStore.js';
 import { InvertedIndexer } from './storage/Indexer.js';
+import { VectorIndex } from './storage/VectorIndex.js';
 import { redactSecrets } from './utils/secretFilter.js';
 import { estimateTokens, allowedCharsForTokens } from './utils/tokenEstimate.js';
 import { LRU } from './utils/lru.js';
@@ -27,6 +28,7 @@ export class MemoryManager {
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, FileStore>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
+  private vectorIdx: Partial<Record<MemoryScope, VectorIndex>> = {};
   private queryCache = new LRU<string, MemorySearchResult>(100);
   private indexUpserts: Partial<Record<MemoryScope, Map<string, MemoryItem>>> = {};
   private indexDeletes: Partial<Record<MemoryScope, Set<string>>> = {};
@@ -71,6 +73,14 @@ export class MemoryManager {
       this.indexers[scope] = new InvertedIndexer(path.join(dir, 'index'));
     }
     return this.indexers[scope]!;
+  }
+
+  private getVectorIndex(scope: MemoryScope, cwd?: string): VectorIndex {
+    if (!this.vectorIdx[scope]) {
+      const dir = this.resolver.getScopeDirectory(scope, cwd);
+      this.vectorIdx[scope] = new VectorIndex(path.join(dir, 'index'));
+    }
+    return this.vectorIdx[scope]!;
   }
 
   private getRanking(scope: MemoryScope): {
@@ -203,13 +213,13 @@ export class MemoryManager {
   async delete(id: string, scope?: MemoryScope, cwd?: string): Promise<boolean> {
     if (scope) {
       const ok = await this.getStore(scope, cwd).deleteItem(id);
-      if (ok) this.scheduleIndexDelete(scope, id);
+      if (ok) { this.scheduleIndexDelete(scope, id); this.getVectorIndex(scope, cwd).remove(id); }
       return ok;
     }
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
       const ok = await this.getStore(s, cwd).deleteItem(id);
-      if (ok) { this.scheduleIndexDelete(s, id); return true; }
+      if (ok) { this.scheduleIndexDelete(s, id); this.getVectorIndex(s, cwd).remove(id); return true; }
     }
     return false;
   }
@@ -273,7 +283,25 @@ export class MemoryManager {
             return b + recency;
           },
         });
-        for (const r of ranked) ids.push({ scope: s, id: r.id, score: r.score });
+        const scoreMap: Record<string, number> = {};
+        for (const r of ranked) { scoreMap[r.id] = r.score; ids.push({ scope: s, id: r.id, score: r.score }); }
+        // Optional hybrid vector search
+        const cfg = this.readConfig(s) || undefined;
+        const h = cfg?.ranking?.hybrid;
+        if (h?.enabled && (q as any).vector && Array.isArray((q as any).vector)) {
+          const vec = (q as any).vector as number[];
+          const topV = this.getVectorIndex(s, cwd).search(vec, q.k || 100);
+          const wBM25 = h.wBM25 ?? 0.7;
+          const wVec = h.wVec ?? 0.3;
+          for (const v of topV) {
+            const combined = (scoreMap[v.id] || 0) * wBM25 + v.score * wVec;
+            scoreMap[v.id] = combined;
+            // ensure present in ids list (will be rescored later)
+            if (!ids.find(e => e.id === v.id && e.scope === s)) ids.push({ scope: s, id: v.id, score: combined });
+          }
+          // Update ids scores
+          for (const e of ids) if (e.scope === s && scoreMap[e.id] != null) e.score = scoreMap[e.id];
+        }
       } else {
         const st = this.getStore(s, cwd);
         const list = await st.listItems();
@@ -595,6 +623,15 @@ export class MemoryManager {
     // Invalidate caches
     this.queryCache.clear();
     return { merged, skipped };
+  }
+
+  // Vectors API
+  async setVector(scope: MemoryScope, id: string, vector: number[], cwd?: string): Promise<void> {
+    this.getVectorIndex(scope, cwd).set(id, vector);
+  }
+
+  removeVector(scope: MemoryScope, id: string, cwd?: string): void {
+    this.getVectorIndex(scope, cwd).remove(id);
   }
 
   async rebuildAll(cwd?: string): Promise<Record<MemoryScope, { items: number }>> {
