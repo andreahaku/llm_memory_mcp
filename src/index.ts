@@ -204,6 +204,11 @@ class LLMKnowledgeBaseServer {
           description: 'Compact journal by writing current state and truncating journal',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
+        {
+          name: 'maintenance.compact.now',
+          description: 'Trigger immediate compaction for a scope (alias of maintenance.compact)',
+          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
+        },
       ],
     }));
 
@@ -348,6 +353,21 @@ class LLMKnowledgeBaseServer {
           }
 
           case 'maintenance.compact': {
+            const scope = (args.scope as string) || 'project';
+            if (scope === 'all') {
+              const res = await this.memory.replayAllFromJournal(true);
+              return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+            }
+            if (scope === 'project') {
+              const committed = await this.memory.replayJournal('committed', undefined, true);
+              const local = await this.memory.replayJournal('local', undefined, true);
+              return { content: [{ type: 'text', text: JSON.stringify({ committed, local }, null, 2) }] };
+            }
+            const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
+            return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'maintenance.compact.now': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = await this.memory.replayAllFromJournal(true);
