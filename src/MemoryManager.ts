@@ -21,6 +21,10 @@ import type {
   MemoryContextPack,
 } from './types/Memory.js';
 
+function log(message: string, ...args: any[]) {
+  console.error(`[MemoryManager] ${new Date().toISOString()} ${message}`, ...args);
+}
+
 type PartialBy<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 export class MemoryManager {
@@ -40,20 +44,28 @@ export class MemoryManager {
   private snapshotIntervals: Partial<Record<MemoryScope, NodeJS.Timeout>> = {};
 
   constructor() {
+    log('Initializing Memory Manager');
+
     // Background journal replay across scopes for fast consistency on startup,
     // but allow disabling or delaying via env vars to avoid blocking first requests.
     const skip = process.env.LLM_MEMORY_SKIP_STARTUP_REPLAY === '1';
     const delay = Number(process.env.LLM_MEMORY_STARTUP_REPLAY_MS || '1000');
     if (!skip) {
+      log(`Scheduling startup recovery in ${delay}ms`);
       setTimeout(() => {
         this.startupFastRecover().catch(() => {});
       }, Math.max(0, isFinite(delay) ? delay : 1000));
+    } else {
+      log('Startup recovery disabled via LLM_MEMORY_SKIP_STARTUP_REPLAY');
     }
+
+    log('Memory Manager initialization complete');
   }
 
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
+      log(`Initializing ${scope} store at: ${dir}`);
       const store = new FileStore(dir);
       this.stores[scope] = store; // set early to avoid recursion
       // Set compaction hook based on scope config (read directly from store)
@@ -159,8 +171,16 @@ export class MemoryManager {
     const now = new Date().toISOString();
     const id = input.id || ulid();
 
+    log(`Upserting memory: type=${input.type}, scope=${input.scope}, id=${id}${input.title ? `, title="${input.title}"` : ''}`);
+
     const store = this.getStore(input.scope);
     const existing = await store.readItem(id);
+
+    if (existing) {
+      log(`Updating existing memory in ${input.scope} scope`);
+    } else {
+      log(`Creating new memory in ${input.scope} scope`);
+    }
 
     // Redact likely secrets from free text/code
     const redText = redactSecrets(input.text);
@@ -222,41 +242,71 @@ export class MemoryManager {
     await store.writeItem(item);
     this.queryCache.clear();
     this.scheduleIndexUpsert(item.scope, item);
+    log(`Memory upsert completed successfully: ${id}`);
     return item.id;
   }
 
   async get(id: string, scope?: MemoryScope, cwd?: string): Promise<MemoryItem | null> {
     if (scope) {
+      log(`Reading memory from ${scope} scope only`);
       return await this.getStore(scope, cwd).readItem(id);
     }
+
+    log('Reading memory from any scope (committed -> local -> global)');
     // Search all scopes with project priority: committed -> local -> global
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
+      log(`Checking ${s} scope`);
       const item = await this.getStore(s, cwd).readItem(id);
-      if (item) return item;
+      if (item) {
+        log(`Memory found in ${s} scope`);
+        return item;
+      }
     }
+    log('Memory not found in any scope');
     return null;
   }
 
   async delete(id: string, scope?: MemoryScope, cwd?: string): Promise<boolean> {
     if (scope) {
+      log(`Deleting memory from ${scope} scope only`);
       const ok = await this.getStore(scope, cwd).deleteItem(id);
-      if (ok) { this.scheduleIndexDelete(scope, id); this.getVectorIndex(scope, cwd).remove(id); }
+      if (ok) {
+        log(`Memory deleted successfully from ${scope} scope`);
+        this.scheduleIndexDelete(scope, id);
+        this.getVectorIndex(scope, cwd).remove(id);
+      } else {
+        log(`Memory deletion failed in ${scope} scope - not found`);
+      }
       return ok;
     }
+
+    log('Deleting memory from any scope (committed -> local -> global)');
     const order: MemoryScope[] = ['committed', 'local', 'global'];
     for (const s of order) {
+      log(`Trying to delete from ${s} scope`);
       const ok = await this.getStore(s, cwd).deleteItem(id);
-      if (ok) { this.scheduleIndexDelete(s, id); this.getVectorIndex(s, cwd).remove(id); return true; }
+      if (ok) {
+        log(`Memory deleted successfully from ${s} scope`);
+        this.scheduleIndexDelete(s, id);
+        this.getVectorIndex(s, cwd).remove(id);
+        return true;
+      }
     }
+    log('Memory deletion failed - not found in any scope');
     return false;
   }
 
   async list(scope: MemoryScope | 'project' | 'all' = 'project', limit?: number, cwd?: string): Promise<MemoryItemSummary[]> {
+    log(`Listing memories: scope=${scope}${limit ? `, limit=${limit}` : ''}`);
+
     const catalogs: MemoryItemSummary[] = [];
     const addFrom = async (s: MemoryScope) => {
+      log(`Getting memories from ${s} scope`);
       const st = this.getStore(s, cwd);
       const cat = st.readCatalog();
+      const count = Object.values(cat).length;
+      log(`Found ${count} memories in ${s} scope`);
       catalogs.push(...Object.values(cat));
     };
 
@@ -272,10 +322,17 @@ export class MemoryManager {
     }
 
     catalogs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return limit ? catalogs.slice(0, limit) : catalogs;
+    const result = limit ? catalogs.slice(0, limit) : catalogs;
+    log(`Total memories returned: ${result.length}`);
+    return result;
   }
 
   async query(q: MemoryQuery, cwd?: string): Promise<MemorySearchResult> {
+    const scope = q.scope || 'project';
+    const searchTerm = q.q || '(no query)';
+    const k = q.k || 50;
+    log(`Searching memories: query="${searchTerm}", scope=${scope}, k=${k}`);
+
     const key = JSON.stringify({
       q: q.q || '',
       scope: q.scope || 'project',
@@ -287,8 +344,11 @@ export class MemoryManager {
       k: q.k || 50,
     });
     const cached = this.queryCache.get(key);
-    if (cached) return cached;
-    const scope = q.scope || 'project';
+    if (cached) {
+      log('Query result found in cache');
+      return cached;
+    }
+
     const ids: Array<{ scope: MemoryScope; id: string; score?: number }> = [];
     const items: MemoryItem[] = [];
 
@@ -376,8 +436,8 @@ export class MemoryManager {
         return { it, score };
       });
       scored.sort((a, b) => b.score - a.score);
-      const k = q.k || 50;
-      const chosen = scored.slice(0, k).map(s => s.it);
+      const kLimit = q.k || 50;
+      const chosen = scored.slice(0, kLimit).map(s => s.it);
       const result = { items: chosen, total: scored.length, scope, query: q };
       this.queryCache.set(key, result);
       return result;
@@ -385,8 +445,8 @@ export class MemoryManager {
       items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
 
-    const k = q.k || 50;
-    const chosen = items.slice(0, k);
+    const kFinal = q.k || 50;
+    const chosen = items.slice(0, kFinal);
 
     if (q.return === 'contextPack') {
       // Minimal context pack synthesis
@@ -796,6 +856,7 @@ export class MemoryManager {
   }
 
   async syncStatus(cwd?: string): Promise<{ onlyLocal: MemoryItemSummary[]; onlyCommitted: MemoryItemSummary[]; localNewer: MemoryItemSummary[]; committedNewer: MemoryItemSummary[] }> {
+    log('Checking sync status between local and committed scopes');
     const localCat = this.getStore('local', cwd).readCatalog();
     const comCat = this.getStore('committed', cwd).readCatalog();
     const onlyLocal: MemoryItemSummary[] = [];
@@ -810,16 +871,19 @@ export class MemoryManager {
       else if (r.updatedAt > l.updatedAt) committedNewer.push(r);
     }
     for (const r of Object.values(comCat)) if (!localCat[r.id]) onlyCommitted.push(r);
+    log(`Sync status: ${onlyLocal.length} only local, ${onlyCommitted.length} only committed, ${localNewer.length} local newer, ${committedNewer.length} committed newer`);
     return { onlyLocal, onlyCommitted, localNewer, committedNewer };
   }
 
   async syncMerge(ids?: string[], cwd?: string): Promise<{ merged: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    log(`Starting sync merge${ids ? ` for ${ids.length} specific items` : ' for all local items'}`);
     const merged: string[] = [];
     const skipped: Array<{ id: string; reason: string }> = [];
     const localStore = this.getStore('local', cwd);
     const commitStore = this.getStore('committed', cwd);
     const cfg = this.readConfig('committed');
     const allowed = cfg?.sharing?.sensitivity || 'team';
+    log(`Sync merge: allowed sensitivity level is ${allowed}`);
     const rank = (s: string) => (s === 'public' ? 0 : s === 'team' ? 1 : 2);
     const list = ids && ids.length ? ids : await localStore.listItems();
     for (const id of list) {
@@ -837,15 +901,18 @@ export class MemoryManager {
     }
     // Invalidate caches
     this.queryCache.clear();
+    log(`Sync merge completed: ${merged.length} merged, ${skipped.length} skipped`);
     return { merged, skipped };
   }
 
   // Vectors API
   async setVector(scope: MemoryScope, id: string, vector: number[], cwd?: string): Promise<void> {
+    log(`Setting vector for memory: scope=${scope}, id=${id}, dimensions=${vector.length}`);
     this.getVectorIndex(scope, cwd).set(id, vector);
   }
 
   removeVector(scope: MemoryScope, id: string, cwd?: string): void {
+    log(`Removing vector for memory: scope=${scope}, id=${id}`);
     this.getVectorIndex(scope, cwd).remove(id);
   }
 

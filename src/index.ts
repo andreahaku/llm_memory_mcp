@@ -14,6 +14,10 @@ import {
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
 
+function log(message: string, ...args: any[]) {
+  console.error(`[LLM-Memory] ${new Date().toISOString()} ${message}`, ...args);
+}
+
 class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
@@ -26,8 +30,10 @@ class LLMKnowledgeBaseServer {
       }
     );
 
+    log('Initializing LLM Memory MCP server');
     this.memory = new MemoryManager();
     this.setupHandlers();
+    log('Server initialization complete');
   }
 
   private setupHandlers(): void {
@@ -285,6 +291,8 @@ class LLMKnowledgeBaseServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
+      log(`Tool called: ${name}`);
+
       if (!args) {
         throw new McpError(ErrorCode.InvalidRequest, 'Missing arguments');
       }
@@ -292,6 +300,11 @@ class LLMKnowledgeBaseServer {
       try {
         switch (name) {
           case 'memory.upsert': {
+            const scope = args.scope as MemoryScope;
+            const type = args.type as MemoryType;
+            const title = args.title as string || '(no title)';
+            log(`Creating memory: type=${type}, scope=${scope}, title="${title}"`);
+
             const id = await this.memory.upsert({
               id: args.id as string | undefined,
               type: args.type as MemoryType,
@@ -304,28 +317,60 @@ class LLMKnowledgeBaseServer {
               quality: { confidence: (args.confidence as number) ?? 0.75, reuseCount: 0, pinned: (args.pinned as boolean) ?? false },
               security: { sensitivity: (args.sensitivity as any) || 'private' },
             } as any);
+
+            log(`Memory upserted successfully: id=${id}, scope=${scope}`);
             return { content: [{ type: 'text', text: `memory.upsert: ${id}` }] };
           }
 
           case 'memory.get': {
+            const scope = args.scope ? ` scope=${args.scope}` : ' (any scope)';
+            log(`Reading memory: id=${args.id}${scope}`);
+
             const item = await this.memory.get(args.id as string, args.scope as MemoryScope);
-            if (!item) throw new McpError(ErrorCode.InvalidRequest, `Item ${args.id} not found`);
+            if (!item) {
+              log(`Memory not found: id=${args.id}`);
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${args.id} not found`);
+            }
+
+            log(`Memory found: id=${args.id}, scope=${item.scope}, type=${item.type}`);
             return { content: [{ type: 'text', text: JSON.stringify(item, null, 2) }] };
           }
 
           case 'memory.delete': {
+            const scope = args.scope ? ` scope=${args.scope}` : ' (any scope)';
+            log(`Deleting memory: id=${args.id}${scope}`);
+
             const ok = await this.memory.delete(args.id as string, args.scope as MemoryScope);
-            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `Item ${args.id} not found`);
+            if (!ok) {
+              log(`Memory deletion failed: id=${args.id} not found`);
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${args.id} not found`);
+            }
+
+            log(`Memory deleted successfully: id=${args.id}`);
             return { content: [{ type: 'text', text: `memory.delete: ${args.id}` }] };
           }
 
           case 'memory.list': {
+            const scope = args.scope || 'project';
+            const limit = args.limit || 'all';
+            log(`Listing memories: scope=${scope}, limit=${limit}`);
+
             const list = await this.memory.list((args.scope as any) || 'project', args.limit as number | undefined);
+
+            log(`Found ${list.length} memories in scope=${scope}`);
             return { content: [{ type: 'text', text: JSON.stringify({ total: list.length, items: list }, null, 2) }] };
           }
 
           case 'memory.query': {
+            const query = args as MemoryQuery;
+            const scope = query.scope || 'project';
+            const searchTerm = query.q || '(no query)';
+            const k = query.k || 50;
+            log(`Searching memories: query="${searchTerm}", scope=${scope}, k=${k}`);
+
             const result = await this.memory.query(args as MemoryQuery);
+
+            log(`Search completed: found ${result.items.length} results`);
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
@@ -385,12 +430,22 @@ class LLMKnowledgeBaseServer {
           }
 
           case 'project.info': {
+            log('Getting project information');
             const info = this.memory.getProjectInfo();
+
+            if (info) {
+              log(`Project info: repoId="${info.repoId}", root="${info.root}", hasCommitted=${info.hasCommittedMemory}`);
+            } else {
+              log('No project detected');
+            }
             return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] };
           }
 
           case 'project.initCommitted': {
+            log('Initializing committed memory');
             const dir = this.memory.initCommittedMemory();
+
+            log(`Committed memory initialized at: ${dir}`);
             return { content: [{ type: 'text', text: `Committed memory initialized at: ${dir}` }] };
           }
 
@@ -523,12 +578,15 @@ class LLMKnowledgeBaseServer {
         }
       } catch (error) {
         if (error instanceof McpError) {
+          log(`Tool error (${name}): ${error.message}`);
           throw error;
         }
 
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`Tool execution failed (${name}): ${errorMessage}`);
         throw new McpError(
           ErrorCode.InternalError,
-          `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
+          `Tool execution failed: ${errorMessage}`
         );
       }
     });
@@ -544,6 +602,7 @@ class LLMKnowledgeBaseServer {
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const { uri } = request.params;
 
+      log(`Resource requested: ${uri}`);
       try {
         if (uri === 'kb://project/info') {
           const projectInfo = this.memory.getProjectInfo();
@@ -621,8 +680,9 @@ class LLMKnowledgeBaseServer {
 
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
+    log('Connecting to MCP transport...');
     await this.server.connect(transport);
-    console.error('LLM Knowledge Base MCP server running on stdio');
+    log('LLM Memory MCP server connected and running on stdio');
   }
 }
 
