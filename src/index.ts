@@ -32,8 +32,30 @@ class LLMKnowledgeBaseServer {
 
     log('Initializing LLM Memory MCP server');
     this.memory = new MemoryManager();
+    this.setupServerEventLogging();
     this.setupHandlers();
     log('Server initialization complete');
+  }
+
+  private setupServerEventLogging(): void {
+    // Hook into the server's request handling to log connections and requests
+    const originalConnect = this.server.connect.bind(this.server);
+    this.server.connect = async (transport: any) => {
+      log('🔗 MCP client connecting...');
+      const result = await originalConnect(transport);
+      log('✅ MCP client connected successfully');
+      return result;
+    };
+
+    // Log when server closes
+    this.server.onclose = () => {
+      log('❌ MCP client disconnected');
+    };
+
+    // Log server errors
+    this.server.onerror = (error: Error) => {
+      log(`🚨 MCP server error: ${error.message}`);
+    };
   }
 
   private setupHandlers(): void {
@@ -290,10 +312,17 @@ class LLMKnowledgeBaseServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
+      const startTime = Date.now();
 
-      log(`Tool called: ${name}`);
+      log(`🔧 Tool called: ${name}`);
+      if (args && Object.keys(args).length > 0) {
+        const argSummary = Object.keys(args).slice(0, 3).join(', ');
+        const hasMore = Object.keys(args).length > 3;
+        log(`   Arguments: ${argSummary}${hasMore ? '...' : ''}`);
+      }
 
       if (!args) {
+        log(`❌ Tool failed: ${name} - Missing arguments`);
         throw new McpError(ErrorCode.InvalidRequest, 'Missing arguments');
       }
 
@@ -577,18 +606,22 @@ class LLMKnowledgeBaseServer {
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         }
       } catch (error) {
+        const duration = Date.now() - startTime;
         if (error instanceof McpError) {
-          log(`Tool error (${name}): ${error.message}`);
+          log(`❌ Tool error (${name}) after ${duration}ms: ${error.message}`);
           throw error;
         }
 
         const errorMessage = error instanceof Error ? error.message : String(error);
-        log(`Tool execution failed (${name}): ${errorMessage}`);
+        log(`💥 Tool execution failed (${name}) after ${duration}ms: ${errorMessage}`);
         throw new McpError(
           ErrorCode.InternalError,
           `Tool execution failed: ${errorMessage}`
         );
       }
+
+      const duration = Date.now() - startTime;
+      log(`✅ Tool completed: ${name} (${duration}ms)`);
     });
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -601,8 +634,9 @@ class LLMKnowledgeBaseServer {
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const { uri } = request.params;
+      const startTime = Date.now();
 
-      log(`Resource requested: ${uri}`);
+      log(`📋 Resource requested: ${uri}`);
       try {
         if (uri === 'kb://project/info') {
           const projectInfo = this.memory.getProjectInfo();
@@ -666,23 +700,38 @@ class LLMKnowledgeBaseServer {
 
         throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${uri}`);
       } catch (error) {
+        const duration = Date.now() - startTime;
         if (error instanceof McpError) {
+          log(`❌ Resource error (${uri}) after ${duration}ms: ${error.message}`);
           throw error;
         }
 
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`💥 Resource access failed (${uri}) after ${duration}ms: ${errorMessage}`);
         throw new McpError(
           ErrorCode.InternalError,
-          `Resource access failed: ${error instanceof Error ? error.message : String(error)}`
+          `Resource access failed: ${errorMessage}`
         );
       }
+
+      const duration = Date.now() - startTime;
+      log(`✅ Resource served: ${uri} (${duration}ms)`);
     });
   }
 
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
-    log('Connecting to MCP transport...');
-    await this.server.connect(transport);
-    log('LLM Memory MCP server connected and running on stdio');
+    log('🚀 Starting LLM Memory MCP server...');
+    log('📡 Connecting to MCP transport (stdio)...');
+
+    try {
+      await this.server.connect(transport);
+      log('✅ LLM Memory MCP server is running and ready for connections');
+      log('📊 Server Info: Tools available, resources accessible, waiting for client requests...');
+    } catch (error) {
+      log(`💥 Failed to start MCP server: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
 }
 
