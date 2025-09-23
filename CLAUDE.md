@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an LLM Memory MCP (Model Context Protocol) Server that provides persistent knowledge base functionality for AI coding tools. It allows Claude Code, Cursor, Codex CLI, and other MCP-compatible tools to store, retrieve, and manage information across sessions with dual-scope storage (global personal notes and project-specific knowledge).
+This is an LLM Memory MCP (Model Context Protocol) Server that provides persistent knowledge base functionality for AI coding tools. It's a local-first, team-ready memory system optimized for JavaScript/TypeScript development but works for any stack. The system provides fast search with BM25 scoring, memory scoping (global/local/committed), and advanced indexing capabilities.
 
 ## Development Commands
 
@@ -39,6 +39,12 @@ node test-functionality.js
 
 # Test MCP server interface and tools
 node test-mcp-tools.js
+
+# Test all tools comprehensively
+pnpm run test:all
+
+# Simulate user interaction flows
+pnpm run simulate:user
 ```
 
 ## Architecture Overview
@@ -47,51 +53,66 @@ node test-mcp-tools.js
 
 **Main Server (`src/index.ts`)**
 - `LLMKnowledgeBaseServer`: Main MCP server class that handles tool registration and request routing
-- Provides 9 MCP tools: `kb.create`, `kb.read`, `kb.update`, `kb.delete`, `kb.list`, `kb.search`, `kb.stats`, `project.info`, `project.init`
-- Implements MCP resources for recent notes and project info
+- Provides comprehensive MCP tools for memory operations, project management, and search
+- Implements MCP resources for recent memories and project info
+- Uses `MemoryManager` as the core backend (modern implementation)
 
-**Knowledge Management (`src/KnowledgeManager.ts`)**
-- `KnowledgeManager`: Central orchestrator that manages multiple knowledge stores
-- Handles project detection via git repository analysis
-- Manages dual storage scopes (global vs project)
-- Implements search relevance scoring and cross-scope operations
+**Memory Management (`src/MemoryManager.ts`)**
+- `MemoryManager`: Modern memory system with advanced search and indexing
+- Supports BM25 scoring, vector indexing, and configurable relevance boosting
+- Handles atomic writes, journaling, and automatic index rebuilding
+- Implements secret redaction and token estimation
+- Manages memory scopes: global, local (per-project), and committed (team-shared)
 
-**Storage Layer (`src/storage/KnowledgeStore.ts`)**
-- `KnowledgeStore`: File-based storage implementation for individual scopes
-- Handles CRUD operations on JSON note files
-- Maintains search indexes and statistics
-- Uses ULID for unique note identifiers
+**Legacy Knowledge Management (`src/KnowledgeManager.ts`)**
+- `KnowledgeManager`: Original note-based system (being phased out)
+- Still used for backward compatibility with existing note storage
+- Project detection via git repository analysis
+
+**Storage Layer**
+- `FileStore` (`src/storage/fileStore.ts`): Modern file-based storage with journaling
+- `KnowledgeStore` (`src/storage/KnowledgeStore.ts`): Legacy storage implementation
+- `InvertedIndexer` (`src/storage/Indexer.ts`): BM25 search indexing
+- `VectorIndex` (`src/storage/VectorIndex.ts`): Vector-based similarity search
+
+**Scope Resolution (`src/scope/ScopeResolver.ts`)**
+- Handles project detection and scope determination
+- Manages transitions between global, local, and committed scopes
 
 ### Storage Architecture
 
 **Global Storage**: `~/.llm-memory/global/`
-- Personal notes available across all projects
+- Personal memories available across all projects
 - Initialized automatically on first use
 
-**Project Storage**: Two modes
+**Project Storage**: Three modes
 1. **Local Project Storage**: `~/.llm-memory/projects/<project-hash>/`
-   - Personal project notes (not committed to git)
-   - Used when project has no committed knowledge base
+   - Personal project memories (not committed to git)
+   - Used when project has no committed memory base
 2. **Committed Project Storage**: `<project-root>/.llm-memory/`
    - Shared project knowledge (committed to git)
    - Created via `project.init` tool
+3. **Automatic Scope Resolution**: System determines appropriate scope based on context
 
-### Note Types and Structure
+### Memory Types and Structure
 
-**Note Types**: `note`, `snippet`, `pattern`, `config`, `fact`, `insight`
+**Memory Types**: `snippet`, `pattern`, `config`, `insight`, `runbook`, `fact`, `note`
 
-**Note Structure** (`src/types/KnowledgeBase.ts`):
+**Memory Structure** (`src/types/Memory.ts`):
 ```typescript
-interface Note {
+interface MemoryItem {
   id: string;              // ULID identifier
-  type: NoteType;          
+  type: MemoryType;
   title: string;
   content: string;
   tags: string[];
-  scope: Scope;            // 'global' | 'project'
+  scope: MemoryScope;      // 'global' | 'local' | 'committed'
+  links?: MemoryLink[];    // Cross-references to other memories
+  isPinned?: boolean;      // Boost search ranking
   metadata: {
     language?: string;     // For code snippets
     file?: string;         // Related file path
+    priority?: number;     // Search ranking boost
     createdAt: string;
     updatedAt: string;
     createdBy: string;
@@ -108,10 +129,12 @@ The system detects projects using git repository information:
 - Falls back to directory-based hashing for non-git projects
 
 ### Search Implementation
-- Text search across title, content, and tags with relevance scoring
-- Support for filtering by type, tags, and scope
-- Cross-scope search capabilities with project notes prioritized
-- Simple but effective scoring algorithm in `KnowledgeManager.calculateRelevanceScore()`
+- **BM25 Scoring**: Advanced text search with TF-IDF and document length normalization
+- **Relevance Boosting**: Configurable boosts for scope, pinned items, recency, and exact matches
+- **Vector Indexing**: Semantic similarity search using vector embeddings
+- **Phrase Detection**: Bonus scoring for quoted phrases and title matches
+- **Cross-Scope Search**: Searches across global, local, and committed scopes with priority ranking
+- **Configurable Tuning**: Per-scope `config.json` files for field weights and boost parameters
 
 ### MCP Integration
 - Fully compliant MCP server implementation
@@ -144,8 +167,9 @@ Always run both test scripts after making changes to verify functionality.
 ### File Imports
 Use `.js` extensions in imports (TypeScript ESM requirement):
 ```typescript
-import { KnowledgeManager } from './KnowledgeManager.js';
-import type { Note } from './types/KnowledgeBase.js';
+import { MemoryManager } from './MemoryManager.js';
+import type { MemoryItem } from './types/Memory.js';
+import { ulid } from './util/ulid.js'; // Note: newer ULID implementation
 ```
 
 ### Error Handling
@@ -159,25 +183,49 @@ try {
 ```
 
 ### ULID Generation
-Use the custom ULID implementation for unique identifiers:
+Use the newer ULID implementation for unique identifiers:
 ```typescript
-import { ulid } from './utils/ULID.js';
+import { ulid } from './util/ulid.js';
 const id = ulid();
+```
+
+### Secret Redaction
+The system automatically redacts common API key patterns:
+```typescript
+import { redactSecrets } from './utils/secretFilter.js';
+const safeContent = redactSecrets(content);
+```
+
+### Token Estimation
+For memory management and optimization:
+```typescript
+import { estimateTokens, allowedCharsForTokens } from './utils/tokenEstimate.js';
+const tokenCount = estimateTokens(content);
+const maxChars = allowedCharsForTokens(maxTokens);
 ```
 
 ## Development Guidelines
 
+- **Use MemoryManager for new features**: The modern memory system with BM25 search and advanced indexing
 - Follow the existing TypeScript patterns and ESM module structure
-- Maintain backward compatibility for stored note formats
+- Maintain backward compatibility for stored memory formats
 - Always update both storage implementation and MCP tool schemas together
 - Test with actual MCP clients (Claude Code, Cursor) for integration verification
-- Use the existing relevance scoring approach for search features
+- Use configurable search tuning via scope-specific `config.json` files
+- Implement atomic writes and journaling for data consistency
+- Apply secret redaction for any user-provided content
 
 ## Important Files
 
 - `src/index.ts`: MCP server entry point and tool definitions
-- `src/KnowledgeManager.ts`: Core business logic and orchestration
-- `src/storage/KnowledgeStore.ts`: Storage implementation
-- `src/types/KnowledgeBase.ts`: Type definitions for the knowledge base system
-- `src/types.ts`: Legacy types (being migrated)
+- `src/MemoryManager.ts`: Modern memory system with BM25 search and indexing
+- `src/KnowledgeManager.ts`: Legacy knowledge management (backward compatibility)
+- `src/scope/ScopeResolver.ts`: Project detection and scope management
+- `src/storage/fileStore.ts`: Modern file storage with journaling
+- `src/storage/Indexer.ts`: BM25 search indexing
+- `src/storage/VectorIndex.ts`: Vector similarity search
+- `src/types/Memory.ts`: Modern memory type definitions
+- `src/types/KnowledgeBase.ts`: Legacy type definitions
+- `src/utils/secretFilter.ts`: API key and secret redaction
+- `src/utils/tokenEstimate.ts`: Token counting and estimation
 - `test-*.js`: Manual testing scripts for development verification

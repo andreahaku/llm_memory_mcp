@@ -53,6 +53,125 @@ codex config set mcp.servers.llm-memory.command "node"
 codex config set mcp.servers.llm-memory.args "['/absolute/path/to/llm-memory-mcp/dist/index.js']"
 ```
 
+## Development Knowledge Manager Agent
+
+This repository includes a specialized agent (`agents/dev-memory-manager.md`) designed for intelligent development knowledge curation with Claude Code. The agent automatically captures critical context before conversation compacting, preserves development progress across sessions, and maintains a living knowledge base.
+
+### What the Agent Does
+
+The **dev-memory-manager** agent provides:
+
+- **Context Preservation**: Automatically saves work-in-progress before conversation limits are reached
+- **Session Continuity**: Reconstructs previous conversation context when returning to ongoing work
+- **Knowledge Curation**: Captures reusable patterns, insights, and technical decisions
+- **Progress Tracking**: Maintains state of multi-session features and debugging journeys
+- **Smart Retrieval**: Proactively surfaces relevant stored knowledge for current tasks
+
+### Installation with Claude Code
+
+1. **Copy the agent file** to your Claude Code agents directory:
+```bash
+# On macOS/Linux
+cp agents/dev-memory-manager.md ~/.claude/agents/
+
+# On Windows
+copy agents\dev-memory-manager.md %USERPROFILE%\.claude\agents\
+```
+
+2. **Configure the LLM Memory MCP server** (as shown in Quick Start above)
+
+3. **Restart Claude Code** to load the new agent
+
+### Usage
+
+The agent activates automatically when you:
+
+- **Approach context limits** during complex development work
+- **Reference previous sessions** or continue ongoing projects
+- **Start new features** that might benefit from stored patterns
+- **Encounter problems** that seem familiar or previously solved
+
+**Manual activation examples:**
+
+```
+# Preserve context before conversation compacting
+Use the dev-memory-manager agent to save our authentication implementation progress
+
+# Retrieve previous session context
+Use the dev-memory-manager agent to get our payment integration context from yesterday
+
+# Capture a complete solution
+Use the dev-memory-manager agent to store this debugging journey and solution
+```
+
+### Key Features
+
+**Context Preservation (Priority)**
+- Saves current work state, variables, file modifications
+- Records decision history and alternatives considered
+- Preserves debugging steps and current hypotheses
+- Links to related conversations and commits
+
+**Knowledge Types Captured**
+- `session`: Work-in-progress and conversation state
+- `snippet`: Reusable code blocks with clear utility
+- `pattern`: Architectural designs and best practices
+- `insight`: Lessons learned and gotchas
+- `runbook`: Step-by-step procedures
+- `journey`: Complete problem-solving narratives
+
+**Smart Storage Strategy**
+- **Global scope**: Universal patterns and personal optimizations
+- **Local scope**: Project-specific work-in-progress
+- **Committed scope**: Team standards and shared knowledge
+- **Session tags**: Continuation markers and project phases
+
+### Example Workflows
+
+**Pre-Compacting Preservation:**
+```
+Long conversation about implementing OAuth → Context limit approaching → Agent automatically saves:
+- Current implementation state
+- Testing approach and results
+- Next planned steps
+- Links to related documentation
+```
+
+**Session Continuity:**
+```
+New conversation → "Continue payment integration work" → Agent retrieves:
+- Previous session progress
+- Code state and file modifications
+- Current blockers and decisions made
+- Relevant patterns and insights
+```
+
+**Knowledge Evolution:**
+```
+Debugging session → Solution found → Agent captures:
+- Complete problem description
+- All attempted solutions
+- Final working solution with explanation
+- Links to related issues and patterns
+```
+
+### Best Practices
+
+1. **Let the agent work proactively** - It monitors context automatically
+2. **Reference previous work clearly** - Use project names and feature identifiers
+3. **Confirm important captures** - Review what the agent stores for critical work
+4. **Use continuation markers** - The agent tags work with `wip`, `blocked`, `next-session`
+5. **Trust the retrieval** - The agent knows what context you might be missing
+
+### Configuration
+
+The agent respects your LLM Memory MCP server configuration:
+- **Scope preferences**: Set in your MCP server config
+- **Search tuning**: Configurable per-scope ranking weights
+- **Storage layout**: Follows your project's memory organization
+
+No additional configuration needed - the agent adapts to your existing memory setup.
+
 ## Scopes and Storage Layout
 
 - global: personal memory across projects (`~/.llm-memory/global`)
