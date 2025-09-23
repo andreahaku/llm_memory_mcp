@@ -6,8 +6,10 @@ A local-first, team-ready MCP server that provides a durable memory system for L
 
 - Unified Memory model: snippet, pattern, config, insight, runbook, fact, note
 - Scopes: global (personal), local (per-project, uncommitted), committed (project/.llm-memory)
-- Fast search: BM25 scoring + boosts (scope, pin, recency) with phrase/title bonuses
-- Tuning via config.json per scope (field weights, bm25, boosts)
+- **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
+- Fast search: BM25 scoring + boosts (scope, pin, recency, confidence) with phrase/title bonuses
+- **User Feedback System**: Record helpful/not helpful feedback to improve confidence scoring
+- Tuning via config.json per scope (field weights, bm25, boosts, confidence parameters)
 - Atomic writes, journaling, and rebuildable index/catalog
 - Secret redaction on ingestion (common API key patterns)
 - MCP tools for authoring, curation, linking, and project management
@@ -209,6 +211,8 @@ Initialize committed scope in current project:
 - memory.link — Link items (refines|duplicates|depends|fixes|relates)
 - memory.pin / memory.unpin — Pin/unpin for ranking
 - memory.tag — Add/remove tags
+- **memory.feedback** — Record helpful/not helpful feedback for confidence scoring
+- **memory.use** — Record usage/access events for confidence scoring
 - vectors.set — Set/update an item embedding (for hybrid search)
 - vectors.remove — Remove an item embedding
 - vectors.importBulk — Bulk import vectors (same dimension enforced)
@@ -238,8 +242,19 @@ Key fields (see `src/types/Memory.ts`):
 - title, text, code, language
 - facets: tags[], files[], symbols[]
 - context: repoId, branch, commit, file, range, tool, etc.
-- quality: confidence, reuseCount, pinned, ttlDays
+- **quality**: confidence, reuseCount, pinned, ttlDays, helpfulCount, notHelpfulCount, decayedUsage, lastAccessedAt, lastUsedAt, lastFeedbackAt
 - security: sensitivity (public/team/private), secretHashRefs
+
+### Confidence Scoring
+
+The `quality.confidence` field (0-1) is automatically calculated using:
+- **Feedback signals**: User helpful/not helpful votes with Bayesian smoothing
+- **Usage patterns**: Access frequency with exponential decay (14-day half-life)
+- **Recency**: Time since last access with decay (7-day half-life)
+- **Context matching**: Relevance to current project/query context
+- **Base prior**: Starting confidence for new items (default 0.5)
+
+Confidence scores directly influence search ranking, with higher confidence items receiving boost multipliers.
 
 Recommended usage for JS/TS projects:
 - Use `type: 'snippet'`, set `language: 'typescript'` or `'javascript'`.
@@ -287,6 +302,16 @@ Pin an important pattern:
 Link related items:
 ```json
 { "name": "memory.link", "arguments": { "from": "01A...", "to": "01B...", "rel": "refines" } }
+```
+
+Record positive feedback for confidence scoring:
+```json
+{ "name": "memory.feedback", "arguments": { "id": "01H...", "helpful": true, "scope": "local" } }
+```
+
+Record usage event for confidence scoring:
+```json
+{ "name": "memory.use", "arguments": { "id": "01H...", "scope": "local" } }
 ```
 
 Rebuild catalog and index for project scopes:
@@ -355,6 +380,64 @@ Set committed-scope tuning:
 ```
 
 After changing field weights, run `maintenance.rebuild` for the affected scope to re-apply indexing weights.
+
+### Confidence Scoring Configuration
+
+The confidence scoring algorithm can be tuned via the `confidence` section in `config.json`:
+
+```ts
+interface ConfidenceConfig {
+  // Bayesian prior for helpfulness (Laplace smoothing)
+  priorAlpha?: number;        // default: 1
+  priorBeta?: number;         // default: 1
+  basePrior?: number;         // default: 0.5
+
+  // Time-based decay
+  usageHalfLifeDays?: number;   // default: 14
+  recencyHalfLifeDays?: number; // default: 7
+
+  // Usage saturation
+  usageSaturationK?: number;    // default: 5
+
+  // Weights for linear blend
+  weights?: {
+    feedback?: number;  // default: 0.35
+    usage?: number;     // default: 0.25
+    recency?: number;   // default: 0.20
+    context?: number;   // default: 0.15
+    base?: number;      // default: 0.05
+  };
+
+  // Pinned behavior
+  pin?: {
+    floor?: number;       // default: 0.8
+    multiplier?: number;  // default: 1.05
+  };
+}
+```
+
+Example configuration:
+```json
+{
+  "name": "project.config.set",
+  "arguments": {
+    "scope": "committed",
+    "config": {
+      "version": "1",
+      "confidence": {
+        "usageHalfLifeDays": 21,
+        "recencyHalfLifeDays": 10,
+        "weights": {
+          "feedback": 0.4,
+          "usage": 0.3,
+          "recency": 0.2,
+          "context": 0.1
+        }
+      }
+    }
+  }
+}
+```
 
 ## Hybrid Vector Search
 
@@ -567,4 +650,35 @@ Manual test:
 - Verify on-disk state vs snapshot/state-ok
 ```json
 { "name": "maintenance.verify", "arguments": { "scope": "project" } }
+```
+
+## Confidence Scoring Workflow
+
+The confidence scoring system automatically learns from your usage patterns and feedback to improve search relevance over time:
+
+- **Automatic tracking**: Every time you access a memory item, its usage count increases
+- **Feedback loops**: Mark items as helpful/not helpful to train the scoring algorithm
+- **Time decay**: Unused items gradually lose confidence to keep results fresh
+- **Context awareness**: Items are ranked higher when they match your current project context
+
+Example workflow:
+```json
+// Create a useful code snippet
+{ "name": "memory.upsert", "arguments": {
+  "type": "snippet",
+  "scope": "local",
+  "title": "React useDebounce Hook",
+  "code": "const useDebounce = (value, delay) => { /* implementation */ }",
+  "language": "typescript",
+  "tags": ["react", "hooks", "performance"]
+}}
+
+// Record usage when you actually use it
+{ "name": "memory.use", "arguments": { "id": "01ABC...", "scope": "local" } }
+
+// Provide feedback when it proves helpful
+{ "name": "memory.feedback", "arguments": { "id": "01ABC...", "helpful": true, "scope": "local" } }
+
+// Search will now rank this item higher in future queries
+{ "name": "memory.query", "arguments": { "q": "react debounce", "scope": "project", "k": 10 } }
 ```

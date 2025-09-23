@@ -307,6 +307,33 @@ class LLMKnowledgeBaseServer {
           description: 'One-click compaction + snapshot for fast recovery',
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
+        {
+          name: 'memory.feedback',
+          description: 'Record user feedback (helpful/not helpful) for a memory item',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              helpful: { type: 'boolean' },
+              scope: { type: 'string', enum: ['global','local','committed'] },
+            },
+            required: ['id', 'helpful'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'memory.use',
+          description: 'Record usage/access of a memory item for confidence scoring',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              scope: { type: 'string', enum: ['global','local','committed'] },
+            },
+            required: ['id'],
+            additionalProperties: false,
+          },
+        },
       ],
     }));
 
@@ -600,6 +627,43 @@ class LLMKnowledgeBaseServer {
             const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
             this.memory.snapshotScope(scope as MemoryScope);
             return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
+          }
+
+          case 'memory.feedback': {
+            const id = args.id as string;
+            const helpful = args.helpful as boolean;
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Recording feedback: id=${id}, helpful=${helpful}${scope ? `, scope=${scope}` : ''}`);
+
+            const item = await this.memory.get(id, scope);
+            if (!item) {
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${id} not found`);
+            }
+
+            this.memory.addFeedback(item, helpful, new Date());
+            await this.memory.upsert(item); // Save the updated item
+
+            log(`Feedback recorded successfully: id=${id}`);
+            return { content: [{ type: 'text', text: 'memory.feedback: ok' }] };
+          }
+
+          case 'memory.use': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Recording usage: id=${id}${scope ? `, scope=${scope}` : ''}`);
+
+            const item = await this.memory.get(id, scope);
+            if (!item) {
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${id} not found`);
+            }
+
+            this.memory.recordAccess(item, 'use', new Date());
+            await this.memory.upsert(item); // Save the updated item
+
+            log(`Usage recorded successfully: id=${id}`);
+            return { content: [{ type: 'text', text: 'memory.use: ok' }] };
           }
 
           default:

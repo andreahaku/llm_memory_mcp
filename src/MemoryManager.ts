@@ -62,6 +62,171 @@ export class MemoryManager {
     log('Memory Manager initialization complete');
   }
 
+  // Confidence scoring configuration with sane defaults, overridable per-scope via config
+  private getConfidenceConfig(scope: MemoryScope): import('./types/Memory.js').ConfidenceConfig {
+    const cfg = this.readConfig(scope) || undefined;
+    const c = cfg?.confidence || {};
+    return {
+      priorAlpha: c.priorAlpha ?? 1,
+      priorBeta: c.priorBeta ?? 1,
+      basePrior: c.basePrior ?? 0.5,
+      usageHalfLifeDays: c.usageHalfLifeDays ?? 14,
+      recencyHalfLifeDays: c.recencyHalfLifeDays ?? 7,
+      usageSaturationK: c.usageSaturationK ?? 5,
+      weights: {
+        feedback: c.weights?.feedback ?? 0.35,
+        usage: c.weights?.usage ?? 0.25,
+        recency: c.weights?.recency ?? 0.20,
+        context: c.weights?.context ?? 0.15,
+        base: c.weights?.base ?? 0.05,
+      },
+      pin: {
+        floor: c.pin?.floor ?? 0.8,
+        multiplier: c.pin?.multiplier ?? 1.05,
+      },
+      expiry: {
+        enabled: c.expiry?.enabled ?? true,
+        taper: c.expiry?.taper ?? true,
+      },
+      contextWeights: {
+        repo: c.contextWeights?.repo ?? 0.4,
+        file: c.contextWeights?.file ?? 0.4,
+        tool: c.contextWeights?.tool ?? 0.2,
+        tagSymbol: c.contextWeights?.tagSymbol ?? 0.3,
+        neutral: c.contextWeights?.neutral ?? 0.5,
+      },
+    };
+  }
+
+  // Lazily apply exponential decay to the item's decayedUsage accumulator
+  applyDecay(item: MemoryItem, now: Date): void {
+    const q = item.quality;
+    const cfg = this.getConfidenceConfig(item.scope);
+    const halfLife = Math.max(0, cfg.usageHalfLifeDays ?? 14);
+    if (!q.decayedUsage || q.decayedUsage < 0) q.decayedUsage = Math.max(0, q.reuseCount || 0);
+    if (!q.decayUpdatedAt) q.decayUpdatedAt = item.updatedAt || item.createdAt;
+    if (halfLife <= 0) { q.decayUpdatedAt = now.toISOString(); return; }
+    const prev = new Date(q.decayUpdatedAt).getTime();
+    const dtMs = Math.max(0, now.getTime() - (isFinite(prev) ? prev : 0));
+    if (dtMs <= 0) { q.decayUpdatedAt = now.toISOString(); return; }
+    const dtDays = dtMs / (1000 * 60 * 60 * 24);
+    const tau = halfLife / Math.log(2);
+    const decay = Math.exp(-dtDays / (tau || 1));
+    q.decayedUsage = (q.decayedUsage || 0) * decay;
+    q.decayUpdatedAt = now.toISOString();
+  }
+
+  // Compute per-query context match score in [0,1]
+  private computeContextMatch(item: MemoryItem, queryContext: import('./types/Memory.js').MemoryContext | undefined): number {
+    const cfg = this.getConfidenceConfig(item.scope);
+    const w = cfg.contextWeights!;
+    if (!queryContext) return w.neutral ?? 0.5;
+    let score = 0;
+    if (queryContext.repoId && item.context.repoId && queryContext.repoId === item.context.repoId) score += w.repo ?? 0.4;
+    if (queryContext.file && item.context.file && queryContext.file === item.context.file) score += w.file ?? 0.4;
+    // Consider either tool or source equality contributing to the same weight bucket
+    const toolMatch = (queryContext.tool && item.context.tool && queryContext.tool === item.context.tool) ||
+                      (queryContext.source && item.context.source && queryContext.source === item.context.source);
+    if (toolMatch) score += w.tool ?? 0.2;
+    // Tag/symbol overlap would require tags in query context; default neutral for now
+    // Keep bounded to 1
+    return Math.max(0, Math.min(1, score));
+  }
+
+  // Main confidence calculation, writes back to item.quality.confidence and timestamps
+  computeConfidence(item: MemoryItem, now: Date, queryContext?: import('./types/Memory.js').MemoryContext): number {
+    const q = item.quality;
+    const cfg = this.getConfidenceConfig(item.scope);
+
+    // Ensure decay is up to date for usage-based signals
+    this.applyDecay(item, now);
+
+    // Feedback helpfulness with Bayesian smoothing
+    const alpha = cfg.priorAlpha ?? 1;
+    const beta = cfg.priorBeta ?? 1;
+    const h = Math.max(0, q.helpfulCount ?? 0);
+    const n = Math.max(0, q.notHelpfulCount ?? 0);
+    const pHelpful = (h + alpha) / (h + n + alpha + beta);
+
+    // Usage saturation
+    const k = Math.max(1e-6, cfg.usageSaturationK ?? 5);
+    const decU = Math.max(0, q.decayedUsage ?? 0);
+    const usage = 1 - Math.exp(-decU / k);
+
+    // Recency of use
+    const recHalf = Math.max(0, cfg.recencyHalfLifeDays ?? 7);
+    let recency = 1;
+    if (recHalf > 0) {
+      const refIso = q.lastUsedAt || item.createdAt;
+      const refMs = new Date(refIso).getTime();
+      const ageDays = Math.max(0, (now.getTime() - (isFinite(refMs) ? refMs : now.getTime())) / (1000 * 60 * 60 * 24));
+      const tau = recHalf / Math.log(2);
+      recency = Math.exp(-ageDays / (tau || 1));
+    }
+
+    // Context match (caller-provided)
+    const contextMatch = this.computeContextMatch(item, queryContext);
+
+    // Base prior
+    const base = cfg.basePrior ?? 0.5;
+
+    // Linear blend
+    const w = cfg.weights!;
+    let raw = (w.feedback! * pHelpful) + (w.usage! * usage) + (w.recency! * recency) + (w.context! * contextMatch) + (w.base! * base);
+
+    // Expiry handling
+    if (cfg.expiry?.enabled !== false && q.expiresAt) {
+      const expMs = new Date(q.expiresAt).getTime();
+      if (isFinite(expMs)) {
+        const remainingMs = expMs - now.getTime();
+        if (remainingMs <= 0) {
+          raw = 0;
+        } else if (cfg.expiry?.taper !== false && q.ttlDays && q.ttlDays > 0) {
+          const remainDays = remainingMs / (1000 * 60 * 60 * 24);
+          const e = Math.max(0, Math.min(1, remainDays / q.ttlDays));
+          raw = raw * e;
+        }
+      }
+    }
+
+    // Pinned adjustments
+    if (q.pinned) {
+      const floor = cfg.pin?.floor ?? 0.8;
+      const mult = cfg.pin?.multiplier ?? 1.05;
+      raw = Math.max(raw, floor);
+      raw = Math.min(1, raw * mult);
+    }
+
+    const final = Math.max(0, Math.min(1, raw));
+    q.confidence = final;
+    q.lastComputedConfidenceAt = now.toISOString();
+    return final;
+  }
+
+  // Record access/usage; updates decayed usage and timestamps, then recomputes confidence
+  recordAccess(item: MemoryItem, kind: 'suggest' | 'view' | 'use', now: Date): void {
+    const q = item.quality;
+    this.applyDecay(item, now);
+    if (kind === 'use') {
+      q.decayedUsage = Math.max(0, (q.decayedUsage ?? 0)) + 1;
+      q.reuseCount = (q.reuseCount || 0) + 1;
+      q.lastUsedAt = now.toISOString();
+    } else {
+      q.lastAccessedAt = now.toISOString();
+    }
+    // Recompute confidence after any signal change
+    this.computeConfidence(item, now);
+  }
+
+  // Add explicit user feedback and recompute confidence
+  addFeedback(item: MemoryItem, helpful: boolean, now: Date): void {
+    const q = item.quality;
+    if (helpful) q.helpfulCount = (q.helpfulCount ?? 0) + 1;
+    else q.notHelpfulCount = (q.notHelpfulCount ?? 0) + 1;
+    q.lastFeedbackAt = now.toISOString();
+    this.computeConfidence(item, now);
+  }
+
   private getStore(scope: MemoryScope, cwd?: string): FileStore {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
@@ -212,11 +377,21 @@ export class MemoryManager {
         framework: input.context?.framework,
       },
       quality: {
-        confidence: input.quality?.confidence ?? 0.75,
+        // Confidence will be computed below using computeConfidence
+        confidence: existing?.quality.confidence ?? input.quality?.confidence ?? 0,
         reuseCount: existing?.quality.reuseCount ?? 0,
-        pinned: input.quality?.pinned ?? false,
-        ttlDays: input.quality?.ttlDays,
-        expiresAt: input.quality?.expiresAt,
+        pinned: input.quality?.pinned ?? existing?.quality.pinned ?? false,
+        ttlDays: input.quality?.ttlDays ?? existing?.quality.ttlDays,
+        expiresAt: input.quality?.expiresAt ?? existing?.quality.expiresAt,
+        // New dynamic quality fields with safe backfills
+        helpfulCount: existing?.quality.helpfulCount ?? 0,
+        notHelpfulCount: existing?.quality.notHelpfulCount ?? 0,
+        decayedUsage: (existing?.quality.decayedUsage ?? existing?.quality.reuseCount ?? 0),
+        decayUpdatedAt: existing?.quality.decayUpdatedAt || existing?.updatedAt || existing?.createdAt || now,
+        lastAccessedAt: existing?.quality.lastAccessedAt,
+        lastUsedAt: existing?.quality.lastUsedAt,
+        lastFeedbackAt: existing?.quality.lastFeedbackAt,
+        lastComputedConfidenceAt: existing?.quality.lastComputedConfidenceAt,
       },
       security: {
         sensitivity: input.security?.sensitivity || 'private',
@@ -237,6 +412,15 @@ export class MemoryManager {
       if (rank(item.security.sensitivity) > rank(allowed)) {
         throw new Error(`Sensitivity '${item.security.sensitivity}' not allowed in committed scope (max: ${allowed})`);
       }
+    }
+
+    // Compute initial/delta confidence based on current signals before persisting
+    try {
+      this.computeConfidence(item, new Date(now));
+    } catch (e) {
+      // In case of any computation issue, keep a sane fallback and proceed
+      item.quality.confidence = Math.max(0, Math.min(1, item.quality.confidence ?? 0.5));
+      item.quality.lastComputedConfidenceAt = now;
     }
 
     await store.writeItem(item);
@@ -368,7 +552,16 @@ export class MemoryManager {
             const updated = new Date(entry.updatedAt).getTime();
             const ageDays = Math.max(0, (Date.now() - updated) / (1000 * 60 * 60 * 24));
             const recency = rank.recency.scale * Math.exp(-ageDays / rank.recency.halfLifeDays);
-            return b + recency;
+
+            // Add confidence-based boost
+            let confidenceBoost = 0;
+            if (entry.confidence !== undefined) {
+              // Use confidence from catalog (already computed)
+              // Scale confidence (0-1) to (0-3) boost
+              confidenceBoost = entry.confidence * 3.0;
+            }
+
+            return b + recency + confidenceBoost;
           },
         });
         const scoreMap: Record<string, number> = {};

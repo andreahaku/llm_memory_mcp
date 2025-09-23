@@ -30,6 +30,17 @@ export interface MemoryQuality {
   pinned?: boolean;
   ttlDays?: number;
   expiresAt?: string;
+  // Feedback signals
+  helpfulCount?: number;
+  notHelpfulCount?: number;
+  // Usage/recency signals with exponential decay tracking
+  decayedUsage?: number;
+  decayUpdatedAt?: string;
+  lastAccessedAt?: string;
+  lastUsedAt?: string;
+  lastFeedbackAt?: string;
+  // Cache/housekeeping
+  lastComputedConfidenceAt?: string;
 }
 
 export interface MemorySecurity {
@@ -100,6 +111,20 @@ export interface MemoryQuery {
     timeRange?: { start: string; end: string };
     tool?: string[];
     confidence?: { min?: number; max?: number };
+    // Optional advanced filters for quality metrics
+    feedback?: {
+      minHelpful?: number;
+      minNotHelpful?: number;
+      minHelpfulRatio?: number; // helpfulCount / (helpfulCount + notHelpfulCount)
+    };
+    usage?: {
+      minReuse?: number;
+      minDecayedUsage?: number;
+    };
+    recency?: {
+      lastUsedAfter?: string;
+      lastAccessedAfter?: string;
+    };
     pinned?: boolean;
   };
   k?: number;
@@ -156,6 +181,7 @@ export interface MemoryConfig {
     ttlDays: number;
     maxItems: number;
   };
+  confidence?: ConfidenceConfig;
   ranking?: {
     fieldWeights?: { title?: number; text?: number; code?: number; tag?: number };
     bm25?: { k1?: number; b?: number };
@@ -174,5 +200,50 @@ export interface MemoryConfig {
     compactIntervalMs?: number; // time-based compaction interval (default: 24h)
     indexFlush?: { maxOps?: number; maxMs?: number }; // index scheduler flush thresholds
     snapshotIntervalMs?: number; // periodic snapshot interval (default: 24h)
+  };
+}
+
+// Tunable parameters for confidence scoring
+export interface ConfidenceConfig {
+  // Bayesian prior for helpfulness
+  priorAlpha?: number; // default: 1
+  priorBeta?: number; // default: 1
+  basePrior?: number; // default: 0.5
+
+  // Time-based decay
+  usageHalfLifeDays?: number; // default: 14
+  recencyHalfLifeDays?: number; // default: 7
+
+  // Usage saturation
+  usageSaturationK?: number; // default: 5
+
+  // Weights for linear blend
+  weights?: {
+    feedback?: number; // default: 0.35
+    usage?: number;    // default: 0.25
+    recency?: number;  // default: 0.20
+    context?: number;  // default: 0.15
+    base?: number;     // default: 0.05
+  };
+
+  // Pinned behavior
+  pin?: {
+    floor?: number;       // default: 0.8
+    multiplier?: number;  // default: 1.05
+  };
+
+  // Expiry handling
+  expiry?: {
+    enabled?: boolean; // default: true
+    taper?: boolean;   // default: true
+  };
+
+  // Context relevance weighting used when deriving a per-query contextMatch
+  contextWeights?: {
+    repo?: number;       // default: 0.4
+    file?: number;       // default: 0.4
+    tool?: number;       // default: 0.2
+    tagSymbol?: number;  // default: 0.3 (cap)
+    neutral?: number;    // default: 0.5 when no context present
   };
 }
