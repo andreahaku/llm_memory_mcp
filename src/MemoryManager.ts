@@ -838,6 +838,118 @@ export class MemoryManager {
     store.writeSnapshotMeta({ lastTs: when });
   }
 
+  // ========== JOURNAL OPTIMIZATION METHODS ==========
+
+  /**
+   * Get journal statistics for a scope
+   */
+  async getJournalStats(scope: MemoryScope, cwd?: string): Promise<{
+    legacy: { exists: boolean; entries: number; sizeBytes: number };
+    optimized: { exists: boolean; entries: number; sizeBytes: number };
+    migrationNeeded: boolean;
+  }> {
+    const store = this.getStore(scope, cwd);
+    return await store.getJournalStats();
+  }
+
+  /**
+   * Migrate legacy journal to optimized format for a scope
+   */
+  async migrateJournalToOptimized(scope: MemoryScope, cwd?: string): Promise<{
+    migrated: number;
+    errors: string[];
+    sizeReduction: { before: number; after: number; percentage: number };
+  }> {
+    const store = this.getStore(scope, cwd);
+    return await store.migrateToOptimizedJournal();
+  }
+
+  /**
+   * Verify integrity using optimized journal for a scope
+   */
+  async verifyIntegrityFromOptimizedJournal(scope: MemoryScope, cwd?: string): Promise<{
+    valid: boolean;
+    corruptedItems: string[];
+    integrityScore: number;
+    checkedCount: number;
+  }> {
+    const store = this.getStore(scope, cwd);
+    return await store.verifyIntegrityFromOptimizedJournal();
+  }
+
+  /**
+   * Get journal stats for all scopes
+   */
+  async getAllJournalStats(cwd?: string): Promise<{
+    global: any;
+    local: any;
+    committed: any;
+    summary: {
+      totalLegacySize: number;
+      totalOptimizedSize: number;
+      totalReduction: number;
+      migrationsNeeded: number;
+    };
+  }> {
+    const [global, local, committed] = await Promise.all([
+      this.getJournalStats('global', cwd),
+      this.getJournalStats('local', cwd),
+      this.getJournalStats('committed', cwd)
+    ]);
+
+    const totalLegacySize = global.legacy.sizeBytes + local.legacy.sizeBytes + committed.legacy.sizeBytes;
+    const totalOptimizedSize = global.optimized.sizeBytes + local.optimized.sizeBytes + committed.optimized.sizeBytes;
+    const totalReduction = totalLegacySize > 0 ? ((totalLegacySize - totalOptimizedSize) / totalLegacySize) * 100 : 0;
+    const migrationsNeeded = [global, local, committed].filter(s => s.migrationNeeded).length;
+
+    return {
+      global,
+      local,
+      committed,
+      summary: {
+        totalLegacySize,
+        totalOptimizedSize,
+        totalReduction,
+        migrationsNeeded
+      }
+    };
+  }
+
+  /**
+   * Migrate all scopes to optimized journal
+   */
+  async migrateAllJournalsToOptimized(cwd?: string): Promise<{
+    global: any;
+    local: any;
+    committed: any;
+    summary: {
+      totalMigrated: number;
+      totalErrors: number;
+      totalReduction: number;
+    };
+  }> {
+    const [global, local, committed] = await Promise.all([
+      this.migrateJournalToOptimized('global', cwd),
+      this.migrateJournalToOptimized('local', cwd),
+      this.migrateJournalToOptimized('committed', cwd)
+    ]);
+
+    const totalMigrated = global.migrated + local.migrated + committed.migrated;
+    const totalErrors = global.errors.length + local.errors.length + committed.errors.length;
+    const avgReduction = (global.sizeReduction.percentage + local.sizeReduction.percentage + committed.sizeReduction.percentage) / 3;
+
+    return {
+      global,
+      local,
+      committed,
+      summary: {
+        totalMigrated,
+        totalErrors,
+        totalReduction: avgReduction
+      }
+    };
+  }
+
   snapshotProject(cwd?: string): void {
     const ts = new Date().toISOString();
     this.snapshotScope('committed', ts, cwd);

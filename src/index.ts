@@ -334,6 +334,41 @@ class LLMKnowledgeBaseServer {
             additionalProperties: false,
           },
         },
+        {
+          name: 'journal.stats',
+          description: 'Get journal statistics and optimization status',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed','all'] },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'journal.migrate',
+          description: 'Migrate legacy journal to optimized hash-based format',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed','all'] },
+            },
+            required: ['scope'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'journal.verify',
+          description: 'Verify integrity using optimized journal hashes',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed','all'] },
+            },
+            required: ['scope'],
+            additionalProperties: false,
+          },
+        },
       ],
     }));
 
@@ -664,6 +699,68 @@ class LLMKnowledgeBaseServer {
 
             log(`Usage recorded successfully: id=${id}`);
             return { content: [{ type: 'text', text: 'memory.use: ok' }] };
+          }
+
+          case 'journal.stats': {
+            const scope = args.scope as string || 'all';
+
+            log(`Getting journal stats: scope=${scope}`);
+
+            if (scope === 'all') {
+              const stats = await this.memory.getAllJournalStats();
+              return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
+            } else {
+              const stats = await this.memory.getJournalStats(scope as MemoryScope);
+              return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
+            }
+          }
+
+          case 'journal.migrate': {
+            const scope = args.scope as string;
+
+            log(`Migrating journal to optimized format: scope=${scope}`);
+
+            if (scope === 'all') {
+              const result = await this.memory.migrateAllJournalsToOptimized();
+              log(`Migration completed: ${result.summary.totalMigrated} entries, ${result.summary.totalReduction.toFixed(1)}% size reduction`);
+              return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+            } else {
+              const result = await this.memory.migrateJournalToOptimized(scope as MemoryScope);
+              log(`Migration completed: ${result.migrated} entries migrated, ${result.sizeReduction.percentage.toFixed(1)}% size reduction`);
+              return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+            }
+          }
+
+          case 'journal.verify': {
+            const scope = args.scope as string;
+
+            log(`Verifying journal integrity: scope=${scope}`);
+
+            if (scope === 'all') {
+              // Verify all scopes
+              const [global, local, committed] = await Promise.all([
+                this.memory.verifyIntegrityFromOptimizedJournal('global'),
+                this.memory.verifyIntegrityFromOptimizedJournal('local'),
+                this.memory.verifyIntegrityFromOptimizedJournal('committed')
+              ]);
+
+              const summary = {
+                global,
+                local,
+                committed,
+                overall: {
+                  valid: global.valid && local.valid && committed.valid,
+                  totalCorrupted: global.corruptedItems.length + local.corruptedItems.length + committed.corruptedItems.length,
+                  avgIntegrityScore: (global.integrityScore + local.integrityScore + committed.integrityScore) / 3
+                }
+              };
+
+              return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+            } else {
+              const result = await this.memory.verifyIntegrityFromOptimizedJournal(scope as MemoryScope);
+              log(`Integrity verification: ${result.valid ? 'PASSED' : 'FAILED'}, score: ${result.integrityScore.toFixed(3)}`);
+              return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+            }
           }
 
           default:

@@ -100,6 +100,26 @@ export interface JournalEntry {
   actor: string;
 }
 
+export interface OptimizedJournalEntry {
+  op: 'upsert' | 'delete' | 'link' | 'touch' | 'incrementReuse';
+  id: string;
+  contentHash?: string;  // SHA-256 of normalized item content
+  prevHash?: string;     // Previous content hash for integrity chain
+  delta?: {              // For incremental updates
+    fields: string[];    // Changed field paths
+    checksum: string;    // Delta checksum
+  };
+  link?: { from: string; rel: string; to: string };
+  ts: string;
+  actor: string;
+  meta?: {              // Optional metadata for recovery
+    size: number;
+    type: MemoryType;
+    scope: MemoryScope;
+    title?: string;
+  };
+}
+
 export interface MemoryQuery {
   q?: string;
   filters?: {

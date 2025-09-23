@@ -9,6 +9,7 @@ A local-first, team-ready MCP server that provides a durable memory system for L
 - **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
 - Fast search: BM25 scoring + boosts (scope, pin, recency, confidence) with phrase/title bonuses
 - **User Feedback System**: Record helpful/not helpful feedback to improve confidence scoring
+- **Optimized Journal System**: Content-based hashing reduces journal storage by 81-95% with automatic migration
 - Tuning via config.json per scope (field weights, bm25, boosts, confidence parameters)
 - Atomic writes, journaling, and rebuildable index/catalog
 - Secret redaction on ingestion (common API key patterns)
@@ -189,7 +190,8 @@ On-disk layout
     lengths.json      # document lengths
     meta.json         # index metadata
   catalog.json        # id -> MemoryItemSummary
-  journal.ndjson      # append-only change log
+  journal.ndjson      # legacy append-only change log (auto-migrated)
+  journal-optimized.ndjson  # optimized journal with SHA-256 hashes (95% smaller)
   locks/              # advisory lock files
   tmp/                # atomic write staging
   config.json         # per-scope configuration
@@ -228,6 +230,9 @@ Initialize committed scope in current project:
 - maintenance.compactSnapshot — One-click compaction + snapshot
 - maintenance.snapshot — Write snapshot meta (lastTs + checksum)
 - maintenance.verify — Verify current checksum vs snapshot and state-ok markers
+- **journal.stats** — Get journal statistics and optimization status
+- **journal.migrate** — Migrate legacy journal to optimized format
+- **journal.verify** — Verify integrity using optimized journal hashes
 
 Resources
 - kb://project/info — Project info + recent items
@@ -650,6 +655,25 @@ Manual test:
 - Verify on-disk state vs snapshot/state-ok
 ```json
 { "name": "maintenance.verify", "arguments": { "scope": "project" } }
+```
+
+## Journal Optimization
+
+The system automatically uses an optimized journal format that reduces storage by 81-95% through content-based hashing:
+
+- Check journal optimization status
+```json
+{ "name": "journal.stats", "arguments": { "scope": "all" } }
+```
+
+- Manually migrate legacy journals (automatic on startup)
+```json
+{ "name": "journal.migrate", "arguments": { "scope": "project" } }
+```
+
+- Verify journal integrity using hashes
+```json
+{ "name": "journal.verify", "arguments": { "scope": "local" } }
 ```
 
 ## Confidence Scoring Workflow

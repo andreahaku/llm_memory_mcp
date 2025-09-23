@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, renameSync } from 'fs';
 import { readdir, writeFile, rename, appendFile } from 'fs/promises';
 import * as path from 'path';
-import type { MemoryItem, MemoryItemSummary, JournalEntry, MemoryConfig } from '../types/Memory.js';
+import type { MemoryItem, MemoryItemSummary, JournalEntry, OptimizedJournalEntry, MemoryConfig } from '../types/Memory.js';
+import { createHash } from 'node:crypto';
 
 interface FileLock {
   path: string;
@@ -17,11 +18,17 @@ export class FileStore {
   private flushTimer: NodeJS.Timeout | null = null;
   private compactionHook?: () => void;
   private compactThreshold = 500;
+  private hashCache = new Map<string, string>(); // Cache item hashes
+  private integrityChain: string[] = []; // Chain of content hashes for integrity
+  private useOptimizedJournal = true; // Flag to enable optimized journal
   private journalAppendCount = 0;
 
   constructor(directory: string) {
     this.directory = directory;
     this.ensureDirectories();
+
+    // Automatically detect and migrate legacy journals
+    this.autoMigrateLegacyJournal();
   }
 
   private ensureDirectories(): void {
@@ -82,19 +89,45 @@ export class FileStore {
   }
 
   async writeItem(item: MemoryItem): Promise<void> {
-    // 1) Journal-first
-    const journalEntry: JournalEntry = {
-      op: 'upsert',
-      item,
-      ts: new Date().toISOString(),
-      actor: `llm-memory-mcp@1.0.0`
-    };
-    this.appendJournal(journalEntry);
+    // Compute content hash for integrity
+    const contentHash = this.computeItemHash(item);
+    const prevHash = this.hashCache.get(item.id);
 
-    // 2) Atomic item write
+    if (this.useOptimizedJournal) {
+      // Use optimized journal with content hashes
+      const optimizedEntry: OptimizedJournalEntry = {
+        op: 'upsert',
+        id: item.id,
+        contentHash,
+        prevHash,
+        ts: new Date().toISOString(),
+        actor: 'llm-memory-mcp@1.0.0',
+        meta: {
+          size: JSON.stringify(item).length,
+          type: item.type,
+          scope: item.scope,
+          title: item.title
+        }
+      };
+      this.appendOptimizedJournal(optimizedEntry);
+    } else {
+      // Fallback to legacy journal for backward compatibility
+      const journalEntry: JournalEntry = {
+        op: 'upsert',
+        item,
+        ts: new Date().toISOString(),
+        actor: 'llm-memory-mcp@1.0.0'
+      };
+      this.appendJournal(journalEntry);
+    }
+
+    // Update hash cache
+    this.hashCache.set(item.id, contentHash);
+
+    // Atomic item write
     await this.writeItemFileRaw(item);
 
-    // 3) Async catalog update
+    // Async catalog update
     this.scheduleCatalogUpsert(item);
   }
 
@@ -135,13 +168,26 @@ export class FileStore {
     }
 
     // Journal-first
-    const journalEntry: JournalEntry = {
-      op: 'delete',
-      id,
-      ts: new Date().toISOString(),
-      actor: `llm-memory-mcp@1.0.0`
-    };
-    this.appendJournal(journalEntry);
+    if (this.useOptimizedJournal) {
+      const optimizedEntry: OptimizedJournalEntry = {
+        op: 'delete',
+        id,
+        ts: new Date().toISOString(),
+        actor: 'llm-memory-mcp@1.0.0'
+      };
+      this.appendOptimizedJournal(optimizedEntry);
+    } else {
+      const journalEntry: JournalEntry = {
+        op: 'delete',
+        id,
+        ts: new Date().toISOString(),
+        actor: 'llm-memory-mcp@1.0.0'
+      };
+      this.appendJournal(journalEntry);
+    }
+
+    // Remove from hash cache
+    this.hashCache.delete(id);
 
     // Delete file
     unlinkSync(itemPath);
@@ -320,6 +366,368 @@ export class FileStore {
     const entries = await this.readJournal();
     if (!sinceTs) return entries;
     return entries.filter(e => !e.ts || e.ts > sinceTs);
+  }
+
+  // ========== OPTIMIZED JOURNAL METHODS ==========
+
+  /**
+   * Compute normalized content hash for a memory item
+   * Excludes volatile fields that shouldn't affect integrity
+   */
+  private computeItemHash(item: MemoryItem): string {
+    // Create normalized version excluding volatile fields
+    const normalized = {
+      ...item,
+      // Remove fields that change frequently but don't affect core content
+      quality: {
+        ...item.quality,
+        lastAccessedAt: undefined,
+        lastUsedAt: undefined,
+        lastFeedbackAt: undefined,
+        lastComputedConfidenceAt: undefined,
+        decayUpdatedAt: undefined,
+      },
+      // Keep version for backward compatibility checks but normalize format
+      version: item.version || 1,
+      updatedAt: item.updatedAt, // Keep this as it's important for content changes
+    };
+
+    // Sort keys recursively for deterministic hashing
+    const sorted = this.sortKeysRecursively(normalized);
+    return createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+  }
+
+  /**
+   * Recursively sort object keys for deterministic serialization
+   */
+  private sortKeysRecursively(obj: any): any {
+    if (obj === null || typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.sortKeysRecursively(item));
+    }
+
+    const sorted: any = {};
+    const keys = Object.keys(obj).sort();
+    for (const key of keys) {
+      sorted[key] = this.sortKeysRecursively(obj[key]);
+    }
+    return sorted;
+  }
+
+  /**
+   * Update integrity chain with new hash
+   */
+  private updateIntegrityChain(hash: string): void {
+    this.integrityChain.push(hash);
+    // Keep chain bounded to prevent memory growth
+    if (this.integrityChain.length > 1000) {
+      this.integrityChain = this.integrityChain.slice(-1000);
+    }
+  }
+
+  /**
+   * Append optimized journal entry with content hash
+   */
+  private appendOptimizedJournal(entry: OptimizedJournalEntry): void {
+    const journalPath = path.join(this.directory, 'journal-optimized.ndjson');
+    appendFileSync(journalPath, JSON.stringify(entry) + '\n');
+
+    // Update integrity chain if it's an upsert with content hash
+    if (entry.op === 'upsert' && entry.contentHash) {
+      this.updateIntegrityChain(entry.contentHash);
+    }
+
+    // Count and possibly trigger compaction hook
+    this.journalAppendCount++;
+    if (this.journalAppendCount >= this.compactThreshold) {
+      this.journalAppendCount = 0;
+      if (this.compactionHook) setImmediate(this.compactionHook);
+    }
+  }
+
+  /**
+   * Read optimized journal entries
+   */
+  async readOptimizedJournal(limit?: number): Promise<OptimizedJournalEntry[]> {
+    const journalPath = path.join(this.directory, 'journal-optimized.ndjson');
+
+    if (!existsSync(journalPath)) {
+      return [];
+    }
+
+    try {
+      const data = readFileSync(journalPath, 'utf8');
+      const lines = data.trim().split('\n').filter(line => line);
+      const entries = lines.map(line => JSON.parse(line) as OptimizedJournalEntry);
+
+      if (limit) {
+        return entries.slice(-limit);
+      }
+
+      return entries;
+    } catch (error) {
+      console.error('Error reading optimized journal:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Verify integrity using hash-based journal
+   */
+  async verifyIntegrityFromOptimizedJournal(): Promise<{
+    valid: boolean;
+    corruptedItems: string[];
+    integrityScore: number;
+    checkedCount: number;
+  }> {
+    const entries = await this.readOptimizedJournal();
+    const corruptedItems: string[] = [];
+    let validCount = 0;
+    let checkedCount = 0;
+
+    for (const entry of entries) {
+      if (entry.op === 'upsert' && entry.contentHash && entry.id) {
+        checkedCount++;
+        try {
+          const item = await this.readItem(entry.id);
+          if (item) {
+            const currentHash = this.computeItemHash(item);
+            if (currentHash === entry.contentHash) {
+              validCount++;
+            } else {
+              corruptedItems.push(entry.id);
+              console.warn(`Hash mismatch for item ${entry.id}: expected ${entry.contentHash}, got ${currentHash}`);
+            }
+          } else {
+            corruptedItems.push(entry.id);
+            console.warn(`Item ${entry.id} not found but exists in journal`);
+          }
+        } catch (error) {
+          corruptedItems.push(entry.id);
+          console.error(`Error verifying item ${entry.id}:`, error);
+        }
+      }
+    }
+
+    return {
+      valid: corruptedItems.length === 0,
+      corruptedItems,
+      integrityScore: checkedCount > 0 ? validCount / checkedCount : 1,
+      checkedCount
+    };
+  }
+
+  /**
+   * Replace optimized journal with new entries
+   */
+  replaceOptimizedJournal(entries: OptimizedJournalEntry[]): void {
+    const journalPath = path.join(this.directory, 'journal-optimized.ndjson');
+    const content = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
+    writeFileSync(journalPath, content);
+  }
+
+  /**
+   * Migrate legacy journal to optimized format
+   */
+  async migrateToOptimizedJournal(): Promise<{
+    migrated: number;
+    errors: string[];
+    sizeReduction: { before: number; after: number; percentage: number };
+  }> {
+    const legacyEntries = await this.readJournal();
+    const optimizedEntries: OptimizedJournalEntry[] = [];
+    const errors: string[] = [];
+    let migrated = 0;
+
+    console.log(`Starting migration of ${legacyEntries.length} legacy journal entries...`);
+
+    for (const entry of legacyEntries) {
+      try {
+        if (entry.op === 'upsert' && entry.item) {
+          // Convert upsert entries with content hashes
+          const contentHash = this.computeItemHash(entry.item);
+
+          optimizedEntries.push({
+            op: entry.op,
+            id: entry.item.id,
+            contentHash,
+            ts: entry.ts,
+            actor: entry.actor,
+            meta: {
+              size: JSON.stringify(entry.item).length,
+              type: entry.item.type,
+              scope: entry.item.scope,
+              title: entry.item.title
+            }
+          });
+
+          // Update hash cache
+          this.hashCache.set(entry.item.id, contentHash);
+          migrated++;
+        } else if (entry.op === 'delete' && entry.id) {
+          // Convert delete entries
+          optimizedEntries.push({
+            op: entry.op,
+            id: entry.id,
+            ts: entry.ts,
+            actor: entry.actor
+          });
+          migrated++;
+        } else if (entry.op === 'link' && entry.link) {
+          // Convert link entries
+          optimizedEntries.push({
+            op: entry.op,
+            id: entry.link.from, // Use 'from' as the primary ID
+            link: entry.link,
+            ts: entry.ts,
+            actor: entry.actor
+          });
+          migrated++;
+        } else {
+          // Convert other operations as-is
+          optimizedEntries.push({
+            op: entry.op as any,
+            id: entry.id || 'unknown',
+            ts: entry.ts,
+            actor: entry.actor
+          });
+          migrated++;
+        }
+      } catch (error) {
+        const errorMsg = `Failed to migrate entry: ${error}`;
+        errors.push(errorMsg);
+        console.error(errorMsg, entry);
+      }
+    }
+
+    // Calculate size reduction
+    const beforeSize = JSON.stringify(legacyEntries).length;
+    const afterSize = JSON.stringify(optimizedEntries).length;
+    const sizeReduction = {
+      before: beforeSize,
+      after: afterSize,
+      percentage: beforeSize > 0 ? ((beforeSize - afterSize) / beforeSize) * 100 : 0
+    };
+
+    // Backup original journal
+    this.backupLegacyJournal();
+
+    // Replace with optimized version
+    this.replaceOptimizedJournal(optimizedEntries);
+
+    console.log(`Migration completed: ${migrated} entries migrated, ${errors.length} errors`);
+    console.log(`Size reduction: ${beforeSize} → ${afterSize} bytes (${sizeReduction.percentage.toFixed(1)}% smaller)`);
+
+    return { migrated, errors, sizeReduction };
+  }
+
+  /**
+   * Backup legacy journal before migration
+   */
+  private backupLegacyJournal(): void {
+    const journalPath = path.join(this.directory, 'journal.ndjson');
+    const backupPath = path.join(this.directory, 'journal.ndjson.backup');
+
+    if (existsSync(journalPath)) {
+      try {
+        renameSync(journalPath, backupPath);
+        console.log(`Legacy journal backed up to: ${backupPath}`);
+      } catch (error) {
+        console.error('Failed to backup legacy journal:', error);
+      }
+    }
+  }
+
+  /**
+   * Check if optimized journal exists and should be used
+   */
+  hasOptimizedJournal(): boolean {
+    const optimizedPath = path.join(this.directory, 'journal-optimized.ndjson');
+    return existsSync(optimizedPath);
+  }
+
+  /**
+   * Automatically migrate legacy journal if it exists and optimized doesn't
+   */
+  private autoMigrateLegacyJournal(): void {
+    // Run migration asynchronously to avoid blocking construction
+    setImmediate(async () => {
+      try {
+        const stats = await this.getJournalStats();
+
+        if (stats.migrationNeeded) {
+          console.log(`🔄 Detected legacy journal in ${this.directory}, starting automatic migration...`);
+
+          const result = await this.migrateToOptimizedJournal();
+
+          console.log(`✅ Auto-migration completed successfully:`);
+          console.log(`   • Migrated ${result.migrated} entries`);
+          console.log(`   • Size reduction: ${result.sizeReduction.before} → ${result.sizeReduction.after} bytes (${result.sizeReduction.percentage.toFixed(1)}% smaller)`);
+          console.log(`   • Errors: ${result.errors.length}`);
+
+          if (result.errors.length > 0) {
+            console.warn(`⚠️  Migration had ${result.errors.length} errors:`, result.errors.slice(0, 3));
+          }
+        }
+      } catch (error) {
+        console.error(`❌ Auto-migration failed for ${this.directory}:`, error);
+        // Don't throw - continue with fallback to legacy journal
+        this.useOptimizedJournal = false;
+      }
+    });
+  }
+
+  /**
+   * Get journal statistics for both legacy and optimized formats
+   */
+  async getJournalStats(): Promise<{
+    legacy: { exists: boolean; entries: number; sizeBytes: number };
+    optimized: { exists: boolean; entries: number; sizeBytes: number };
+    migrationNeeded: boolean;
+  }> {
+    const legacyPath = path.join(this.directory, 'journal.ndjson');
+    const optimizedPath = path.join(this.directory, 'journal-optimized.ndjson');
+
+    const legacy = {
+      exists: existsSync(legacyPath),
+      entries: 0,
+      sizeBytes: 0
+    };
+
+    const optimized = {
+      exists: existsSync(optimizedPath),
+      entries: 0,
+      sizeBytes: 0
+    };
+
+    if (legacy.exists) {
+      try {
+        const data = readFileSync(legacyPath, 'utf8');
+        legacy.sizeBytes = data.length;
+        legacy.entries = data.trim().split('\n').filter(line => line).length;
+      } catch (error) {
+        console.error('Error reading legacy journal stats:', error);
+      }
+    }
+
+    if (optimized.exists) {
+      try {
+        const data = readFileSync(optimizedPath, 'utf8');
+        optimized.sizeBytes = data.length;
+        optimized.entries = data.trim().split('\n').filter(line => line).length;
+      } catch (error) {
+        console.error('Error reading optimized journal stats:', error);
+      }
+    }
+
+    return {
+      legacy,
+      optimized,
+      migrationNeeded: legacy.exists && !optimized.exists
+    };
   }
 
   async listItems(): Promise<string[]> {
