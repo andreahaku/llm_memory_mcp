@@ -1,0 +1,59 @@
+{
+  "timestamp": "2025-09-25T15:34:49.912Z",
+  "summary": {
+    "totalTests": 4,
+    "passedTests": 4,
+    "failedTests": 0,
+    "successRate": 1
+  },
+  "results": [
+    {
+      "name": "Small TypeScript function",
+      "type": "snippet",
+      "category": "small",
+      "originalSize": 508,
+      "qrEncodedSize": 295,
+      "compressionRatio": 1.7220338983050847,
+      "frameCount": 1,
+      "isCompressed": true,
+      "processingTimeMs": 14,
+      "success": true
+    },
+    {
+      "name": "Medium documentation block",
+      "type": "note",
+      "category": "medium",
+      "originalSize": 812,
+      "qrEncodedSize": 519,
+      "compressionRatio": 1.5645472061657033,
+      "frameCount": 1,
+      "isCompressed": true,
+      "processingTimeMs": 20,
+      "success": true
+    },
+    {
+      "name": "Large configuration object",
+      "type": "config",
+      "category": "large",
+      "originalSize": 2171,
+      "qrEncodedSize": 828,
+      "compressionRatio": 2.6219806763285023,
+      "frameCount": 1,
+      "isCompressed": true,
+      "processingTimeMs": 12,
+      "success": true
+    },
+    {
+      "name": "Very large implementation guide",
+      "type": "runbook",
+      "category": "xlarge",
+      "originalSize": 16405,
+      "qrEncodedSize": 5578,
+      "compressionRatio": 2.941018286124059,
+      "frameCount": 2,
+      "isCompressed": true,
+      "processingTimeMs": 53,
+      "success": true
+    }
+  ]
+}
