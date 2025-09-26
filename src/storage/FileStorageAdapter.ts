@@ -1,15 +1,21 @@
 import { FileStore } from './fileStore.js';
 import type { StorageAdapter, WriteResult, GetResult, StorageStats, CompactionStats } from './StorageAdapter.js';
 import type { MemoryItem, MemoryItemSummary, MemoryConfig, MemoryScope } from '../types/Memory.js';
+import { existsSync, readdirSync } from 'fs';
+import * as path from 'path';
 
 /**
  * FileStorageAdapter wraps the existing FileStore to implement the StorageAdapter interface
  * Provides backward compatibility while enabling pluggable storage backends
  */
+// Remove the global state - we'll just handle lock conflicts gracefully
+
 export class FileStorageAdapter implements StorageAdapter {
   private fileStore: FileStore;
+  private directory: string;
 
   constructor(directory: string) {
+    this.directory = directory;
     this.fileStore = new FileStore(directory);
   }
 
@@ -50,7 +56,37 @@ export class FileStorageAdapter implements StorageAdapter {
 
   // Catalog operations
   readCatalog(): Record<string, MemoryItemSummary> {
-    return this.fileStore.readCatalog();
+    const catalog = this.fileStore.readCatalog();
+
+    // If catalog is empty but items exist, rebuild it from items directory
+    if (Object.keys(catalog).length === 0) {
+      console.log('📝 Catalog is empty, checking if items exist...');
+      try {
+        // Check if items directory has any JSON files
+        const itemsDir = path.join(this.directory, 'items');
+
+        if (existsSync(itemsDir)) {
+          const files = readdirSync(itemsDir).filter((f: string) => f.endsWith('.json'));
+          if (files.length > 0) {
+            console.log(`🔧 Found ${files.length} items without catalog, rebuilding...`);
+            try {
+              this.fileStore.rebuildCatalog();
+              return this.fileStore.readCatalog(); // Re-read after rebuild
+            } catch (error) {
+              if (error instanceof Error && error.message.includes('Lock')) {
+                console.log('📝 Catalog rebuild in progress by another process, returning empty catalog');
+                return catalog; // Return empty catalog if lock is held
+              }
+              throw error; // Re-throw other errors
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Could not rebuild catalog from items:', error);
+      }
+    }
+
+    return catalog;
   }
 
   setCatalog(catalog: Record<string, MemoryItemSummary>): void {

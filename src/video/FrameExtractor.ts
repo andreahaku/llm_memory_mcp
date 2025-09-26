@@ -391,7 +391,6 @@ export class FrameExtractor {
     if (useFallback) {
       // Fallback mode: more lenient frame selection
       filters.push(`select='gte(n\\,${frameIndex})'`);
-      filters.push('scale2ref');
     } else {
       // Normal mode: precise frame selection
       filters.push(`select='eq(n\\,${frameIndex})'`);

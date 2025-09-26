@@ -6,15 +6,32 @@ import type {
   VideoEncodingOptions,
   EncoderFactory,
 } from './VideoEncoder.js';
-import {
-  WasmFFmpegEncoder,
-  isWasmEncoderSupported,
-  estimateWasmMemoryUsage,
-} from './WasmEncoder.js';
+// Import NativeEncoder directly (works with system FFmpeg)
 import {
   NativeFFmpegEncoder,
   isNativeEncoderSupported,
 } from './NativeEncoder.js';
+
+// Dynamic import for WASM to avoid startup dependency issues
+let WasmFFmpegEncoder: any = null;
+let isWasmEncoderSupported: any = null;
+let estimateWasmMemoryUsage: any = null;
+
+async function loadWasmEncoder() {
+  if (!WasmFFmpegEncoder) {
+    try {
+      const wasmModule = await import('./WasmEncoder.js');
+      WasmFFmpegEncoder = wasmModule.WasmFFmpegEncoder;
+      isWasmEncoderSupported = wasmModule.isWasmEncoderSupported;
+      estimateWasmMemoryUsage = wasmModule.estimateWasmMemoryUsage;
+      return true;
+    } catch (error) {
+      console.warn('WASM encoder not available:', (error as Error).message);
+      return false;
+    }
+  }
+  return true;
+}
 import { QR_ENCODING_PROFILES } from './VideoEncoder.js';
 
 /**
@@ -141,18 +158,32 @@ async function detectHardwareEncoders(): Promise<string[]> {
  * Create the optimal encoder based on system capabilities and requirements
  */
 export async function createOptimalEncoder(): Promise<VideoEncoder> {
-  const capabilities = await detectEncoderCapabilities();
-
-  switch (capabilities.recommendedEncoder) {
-    case 'wasm':
-      return new WasmFFmpegEncoder();
-
-    case 'native':
-      return new NativeFFmpegEncoder();
-
-    default:
-      throw new Error('No suitable video encoder found on this system');
+  // First try native FFmpeg (bypass WASM issues)
+  try {
+    const nativeEncoder = new NativeFFmpegEncoder();
+    await nativeEncoder.initialize();
+    console.log('Using native FFmpeg encoder');
+    return nativeEncoder;
+  } catch (nativeError) {
+    console.warn('Native FFmpeg encoder failed:', nativeError);
   }
+
+  // Fallback to WASM if native fails
+  try {
+    const wasmLoaded = await loadWasmEncoder();
+    if (wasmLoaded && WasmFFmpegEncoder) {
+      const wasmEncoder = new WasmFFmpegEncoder();
+      await wasmEncoder.initialize();
+      console.log('Using WASM FFmpeg encoder');
+      return wasmEncoder;
+    } else {
+      console.warn('WASM encoder could not be loaded');
+    }
+  } catch (wasmError) {
+    console.warn('WASM FFmpeg encoder failed:', wasmError);
+  }
+
+  throw new Error('No suitable video encoder found on this system');
 }
 
 /**
@@ -171,9 +202,22 @@ export function getRecommendedEncodingProfile(
   const frameSize = firstFrame.imageData.width * firstFrame.imageData.height;
   const totalFrames = frames.length;
 
-  // Estimate memory requirements
-  const memoryEstimate = estimateWasmMemoryUsage(frames);
-  const isLowMemory = memoryEstimate.recommendedHeapSize > 512 * 1024 * 1024; // > 512MB
+  // Estimate memory requirements (fallback if WASM not available)
+  let isLowMemory = false;
+  try {
+    if (estimateWasmMemoryUsage) {
+      const memoryEstimate = estimateWasmMemoryUsage(frames);
+      isLowMemory = memoryEstimate.recommendedHeapSize > 512 * 1024 * 1024; // > 512MB
+    } else {
+      // Simple fallback estimation
+      const estimatedSize = frameSize * totalFrames * 4; // RGBA
+      isLowMemory = estimatedSize > 512 * 1024 * 1024;
+    }
+  } catch (error) {
+    // Fallback estimation
+    const estimatedSize = frameSize * totalFrames * 4; // RGBA
+    isLowMemory = estimatedSize > 512 * 1024 * 1024;
+  }
 
   // Select profile based on requirements
   switch (targetQuality) {
@@ -274,7 +318,7 @@ export function estimateEncodingRequirements(
   _options: Partial<VideoEncodingOptions> = {}
 ): {
   estimatedDuration: number; // in seconds
-  memoryRequirements: ReturnType<typeof estimateWasmMemoryUsage>;
+  memoryRequirements: any; // Flexible type for memory requirements
   recommendedTimeout: number; // in milliseconds
   diskSpaceRequired: number; // in bytes
 } {
@@ -287,8 +331,29 @@ export function estimateEncodingRequirements(
   const estimatedFps = Math.max(10, Math.min(40, 100000 / frameSize));
   const estimatedDuration = frameCount / estimatedFps;
 
-  // Memory requirements
-  const memoryRequirements = estimateWasmMemoryUsage(frames);
+  // Memory requirements (with fallback)
+  let memoryRequirements: any;
+  try {
+    if (estimateWasmMemoryUsage) {
+      memoryRequirements = estimateWasmMemoryUsage(frames);
+    } else {
+      // Fallback memory estimation
+      const rawSize = frameCount * frameSize * 4; // RGBA
+      memoryRequirements = {
+        recommendedHeapSize: rawSize * 2, // 2x for processing
+        estimatedPeakUsage: rawSize * 3,
+        minHeapSize: rawSize
+      };
+    }
+  } catch (error) {
+    // Fallback memory estimation
+    const rawSize = frameCount * frameSize * 4; // RGBA
+    memoryRequirements = {
+      recommendedHeapSize: rawSize * 2,
+      estimatedPeakUsage: rawSize * 3,
+      minHeapSize: rawSize
+    };
+  }
 
   // Recommended timeout (3x estimated duration + 60s safety margin)
   const recommendedTimeout = Math.max(60000, estimatedDuration * 3000);

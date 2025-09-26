@@ -530,12 +530,22 @@ export class QRDecoder {
     isCompressed: boolean;
     originalSize: number;
   }> {
+    console.log(`🔍 [QRDecoder] handleDecompression input: ${data.length} bytes`);
+    console.log(`🔍 [QRDecoder] First 16 bytes: ${Array.from(data.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+
     try {
       // Check if data looks like gzip (starts with 0x1f, 0x8b)
-      if (data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b) {
+      const isGzip = data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b;
+      console.log(`🔍 [QRDecoder] Gzip signature detected: ${isGzip}`);
+
+      if (isGzip) {
+        console.log(`🔍 [QRDecoder] Attempting gzip decompression...`);
         // Attempt decompression
         const decompressed = zlib.gunzipSync(data);
         const decompressedArray = new Uint8Array(decompressed);
+
+        console.log(`✅ [QRDecoder] Decompression successful: ${data.length} → ${decompressedArray.length} bytes`);
+        console.log(`🔍 [QRDecoder] Decompressed first 64 chars: "${new TextDecoder('utf-8').decode(decompressedArray.slice(0, 64))}"`);
 
         return {
           content: decompressedArray,
@@ -545,9 +555,11 @@ export class QRDecoder {
       }
     } catch (error) {
       // If decompression fails, fall back to original data
-      console.warn('Decompression failed, using original data:', error);
+      console.warn('❌ [QRDecoder] Decompression failed, using original data:', error);
+      console.log(`🔍 [QRDecoder] Raw data first 64 chars: "${new TextDecoder('utf-8', {fatal: false}).decode(data.slice(0, 64))}"`);
     }
 
+    console.log(`📝 [QRDecoder] Using uncompressed data: ${data.length} bytes`);
     return {
       content: data,
       isCompressed: false,

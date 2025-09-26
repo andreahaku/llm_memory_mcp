@@ -139,13 +139,19 @@ export class QRManager {
     // Split into chunks if needed
     const chunks = this.splitIntoChunks(processedData);
 
+    // IMPORTANT: For video compatibility, all QR frames must have identical dimensions
+    // Find the maximum QR version needed for all chunks and use it for ALL frames
+    const maxChunkSize = Math.max(...chunks.map(chunk => chunk.data.length + 16)); // +16 for header
+    const uniformParameters = this.selectOptimalParameters(maxChunkSize);
+    console.log(`🎯 Using uniform QR version ${uniformParameters.version} for all ${chunks.length} frames (max chunk: ${maxChunkSize} bytes)`);
+
     // Generate QR frames for each chunk
     const frames: QRFrame[] = [];
     const manifest: Array<{ chunkId: string; frameIndex: number; byteOffset: number }> = [];
     let byteOffset = 0;
 
     for (const chunk of chunks) {
-      const qrFrame = await this.generateQRFrame(chunk, {
+      const qrFrame = await this.generateQRFrame(chunk, uniformParameters, {
         frameIndex: frames.length,
         totalFrames: chunks.length,
         contentHash,
@@ -250,11 +256,12 @@ export class QRManager {
    */
   private async generateQRFrame(
     chunk: ContentChunk,
+    uniformParams: QRParameters,
     baseMetadata: Partial<QRFrameMetadata>
   ): Promise<QRFrame> {
     try {
-      // Select optimal QR parameters for this chunk
-      const params = this.selectOptimalParameters(chunk.data.length);
+      // Use provided uniform parameters to ensure consistent dimensions
+      const params = uniformParams;
 
       // Create QR code with selected parameters
       const qr = qrcode(params.version as any, this.mapErrorCorrectionLevel(params.errorCorrectionLevel) as any);

@@ -135,7 +135,7 @@ class LLMKnowledgeBaseServer {
       const MigrationManagerClass = await loadMigrationManager();
       if (MigrationManagerClass) {
         this.migration = new MigrationManagerClass();
-        console.log('[LLM-Memory] Migration tools initialized - file-based operations only (video backend disabled)');
+        console.log('[LLM-Memory] 🎬 Migration tools initialized - video and file backends available');
       }
     }
     return this.migration;
@@ -960,6 +960,12 @@ class LLMKnowledgeBaseServer {
             };
 
             const result = await mgr.migrateStorageBackend(options);
+
+            // Refresh MemoryManager's storage adapter after successful migration
+            if (result.success && !dryRun) {
+              log(`Refreshing MemoryManager storage adapter for ${scope} scope after migration`);
+              this.memory.refreshStorageAdapter(scope);
+            }
 
             const summary = {
               migration: 'storage_backend',

@@ -196,14 +196,15 @@ export const DEFAULT_QR_ENCODING_OPTIONS: VideoEncodingOptions = {
   preset: 'medium', // Balance between speed and compression
   tune: 'stillimage', // Optimize for QR code patterns
   extraOptions: {
-    // Additional H.264 options for QR code optimization
+    // FFmpeg-level H.264 options
     'profile:v': 'high',
     'level': '4.1',
+    // x264-specific options (will be passed via -x264-params)
     'refs': 4,        // Reference frames for better compression
     'b-adapt': 2,     // Adaptive B-frame decision
     'weightb': 1,     // Weighted prediction for B-frames
-    'me_method': 'hex', // Motion estimation method
-    'subq': 7,        // Subpixel motion estimation quality
+    'me': 'hex',      // Motion estimation method
+    'subme': 7,       // Subpixel motion estimation quality
     'trellis': 1,     // Rate-distortion optimization
   }
 };

@@ -34,6 +34,9 @@ export interface FrameContentMapping {
   itemId: string;
   byteOffset: number;
   decodedSize: number;
+  chunkIndex?: number;        // Which chunk of the item this frame represents
+  totalChunks?: number;       // Total chunks for the item
+  originalItemHash?: string;  // Hash of the complete original item
 }
 
 /**
@@ -150,7 +153,8 @@ export class VideoSegmentManager {
       ? this.deduplicateItems(items)
       : items;
 
-    // Convert items to QR frames using QRManager
+    // Convert items to QR frames using QRManager - STREAMING APPROACH
+    console.log(`🎬 Creating QR stream for ${uniqueItems.length} items with unique frames`);
     const qrManager = await import('../qr/QRManager.js').then(m => new m.QRManager());
     const allFrames: QRFrame[] = [];
     const frameMappings: FrameContentMapping[] = [];
@@ -173,27 +177,45 @@ export class VideoSegmentManager {
         version: item.version
       });
 
+      console.log(`📝 Processing item ${item.id}: ${contentText.length} chars`);
+
+      // Encode the item - this creates multiple QR frames if content is large
       const qrResult = await qrManager.encodeToQR(contentText);
       const contentHash = createHash('sha256').update(contentText).digest('hex');
 
-      // Add frame mapping
-      frameMappings.push({
-        frameIndex: currentFrameIndex,
-        contentHash,
-        itemId: item.id,
-        byteOffset: currentFrameIndex * 24, // Approximate offset
-        decodedSize: contentText.length
-      });
+      console.log(`🎯 Generated ${qrResult.frames.length} unique QR frames for item ${item.id}`);
 
-      allFrames.push(...qrResult.frames);
+      // Map each individual QR frame to the content - this creates true streaming
+      for (let i = 0; i < qrResult.frames.length; i++) {
+        const frame = qrResult.frames[i];
+
+        // Create frame mapping for each unique QR frame
+        frameMappings.push({
+          frameIndex: currentFrameIndex + i,
+          contentHash: contentHash + '_chunk_' + i, // Unique hash per chunk
+          itemId: item.id,
+          byteOffset: (currentFrameIndex + i) * 24,
+          decodedSize: frame.rawData.length || 0,
+          chunkIndex: i,
+          totalChunks: qrResult.frames.length,
+          originalItemHash: contentHash
+        });
+
+        allFrames.push(frame);
+        console.log(`📄 Frame ${currentFrameIndex + i}: ${frame.rawData.length} bytes, chunk ${i+1}/${qrResult.frames.length}`);
+      }
+
       currentFrameIndex += qrResult.frames.length;
 
-      // Update content hash mapping
+      // Update content hash mapping to point to the first frame of this item
       this.contentHashToSegment.set(contentHash, {
         segmentUlid,
-        frameIndex: frameMappings.length - 1
+        frameIndex: frameMappings.findIndex(m => m.originalItemHash === contentHash)
       });
     }
+
+    console.log(`✨ Created QR stream: ${allFrames.length} unique frames, ${currentFrameIndex} total frames`);
+    console.log(`🎞️  Each frame contains different QR data - true streaming approach!`);
 
     // Get encoding options and fix type issues
     const encodingOptions = this.getEncodingOptionsForProfile(opts.compressionProfile);

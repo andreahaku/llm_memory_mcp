@@ -230,11 +230,65 @@ export class MemoryManager {
     this.computeConfidence(item, now);
   }
 
+  /**
+   * Force re-initialization of a scope's storage adapter (for post-migration scenarios)
+   */
+  public refreshStorageAdapter(scope: MemoryScope): void {
+    log(`Refreshing storage adapter for ${scope} scope`);
+    delete this.stores[scope];
+  }
+
+  private detectStorageBackend(dir: string): 'file' | 'video' {
+    try {
+      const configPath = path.join(dir, 'config.json');
+      if (fs.existsSync(configPath)) {
+        try {
+          const configRaw = fs.readFileSync(configPath, 'utf8');
+          const config = JSON.parse(configRaw);
+          const backend = config?.storage?.backend;
+          if (backend === 'video' || backend === 'file') {
+            return backend;
+          }
+        } catch (error) {
+          log(`Failed to read storage backend from config at ${configPath}:`, error);
+        }
+      }
+
+      // Check for video storage indicators
+      const segmentsDir = path.join(dir, 'segments');
+      if (fs.existsSync(segmentsDir)) {
+        const files = fs.readdirSync(segmentsDir);
+        // Look for .mp4 or .mvi files
+        if (files.some(f => f.endsWith('.mp4') || f.endsWith('.mvi'))) {
+          return 'video';
+        }
+      }
+      return 'file';
+    } catch (error) {
+      log(`Error detecting storage backend for ${dir}:`, error);
+      return 'file'; // Default fallback
+    }
+  }
+
   private getStore(scope: MemoryScope, cwd?: string): StorageAdapter {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
       log(`Initializing ${scope} store at: ${dir}`);
-      const store = this.storageAdapterFactory.create(dir, scope);
+
+      // Auto-detect storage backend based on directory contents
+      const storageBackend = this.detectStorageBackend(dir);
+      log(`Detected storage backend for ${scope}: ${storageBackend}`);
+
+      let store: StorageAdapter;
+      if (storageBackend === 'video') {
+        // Import VideoStorageAdapterFactory dynamically
+        const { VideoStorageAdapterFactory } = require('./storage/VideoStorageAdapter.js');
+        const videoFactory = new VideoStorageAdapterFactory();
+        store = videoFactory.create(dir, scope);
+      } else {
+        store = this.storageAdapterFactory.create(dir, scope);
+      }
+
       this.stores[scope] = store; // set early to avoid recursion
       // Set compaction hook based on scope config (read directly from store)
       const cfg = store.readConfig() || undefined;

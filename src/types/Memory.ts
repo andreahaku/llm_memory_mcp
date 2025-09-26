@@ -187,6 +187,9 @@ export interface ProjectInfo {
 
 export interface MemoryConfig {
   version: string;
+  storage?: {
+    backend?: 'file' | 'video';
+  };
   sharing?: {
     enabled: boolean;
     autoSync: boolean;

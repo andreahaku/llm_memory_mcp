@@ -398,13 +398,17 @@ export class VideoDecoder {
       // Handle decompression if needed
       let contentBytes = qrResult.content;
 
-      // Check if content is compressed (starts with gzip magic bytes)
-      if (contentBytes.length >= 2 && contentBytes[0] === 0x1f && contentBytes[1] === 0x8b) {
+      // If this is a single-frame payload and it appears gzip-compressed, decompress before JSON parsing.
+      // For multi-frame content, decompression is handled after reassembly in QRDecoder.reconstructMultiFrame().
+      const isSingleFrame = !!qrResult.metadata && qrResult.metadata.totalChunks === 1;
+      const looksGzip = contentBytes.length >= 2 && contentBytes[0] === 0x1f && contentBytes[1] === 0x8b;
+      if (isSingleFrame && looksGzip) {
         try {
           const decompressed = zlib.gunzipSync(contentBytes);
           contentBytes = new Uint8Array(decompressed);
-        } catch (error) {
-          console.warn('Failed to decompress QR content, using original:', error);
+        } catch (e) {
+          // Fall back to original bytes; JSON parsing will fail if invalid
+          console.warn('Single-frame gzip decompression failed, proceeding with raw bytes:', e);
         }
       }
 
@@ -455,6 +459,12 @@ export class VideoDecoder {
    */
   private async reconstructMemoryItemFromBytes(content: string | Uint8Array): Promise<MemoryItem | null> {
     try {
+      console.log(`🔍 [VideoDecoder] reconstructMemoryItemFromBytes input type: ${content instanceof Uint8Array ? 'Uint8Array' : 'string'}`);
+      if (content instanceof Uint8Array) {
+        console.log(`🔍 [VideoDecoder] Uint8Array length: ${content.length} bytes`);
+        console.log(`🔍 [VideoDecoder] First 16 bytes: ${Array.from(content.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      }
+
       let contentString: string;
 
       if (content instanceof Uint8Array) {
@@ -462,6 +472,10 @@ export class VideoDecoder {
       } else {
         contentString = content;
       }
+
+      console.log(`🔍 [VideoDecoder] Content string length: ${contentString.length} chars`);
+      console.log(`🔍 [VideoDecoder] First 100 chars: "${contentString.slice(0, 100)}"`);
+      console.log(`🔍 [VideoDecoder] Attempting JSON.parse...`);
 
       const parsedData = JSON.parse(contentString);
 

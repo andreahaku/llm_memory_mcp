@@ -343,16 +343,27 @@ export class NativeFFmpegEncoder implements VideoEncoder {
 
     // Add profile and level for H.264 compatibility
     if (options.codec === 'h264' && options.extraOptions) {
+      const x264Params: string[] = [];
+
       Object.entries(options.extraOptions).forEach(([key, value]) => {
-        // Skip profile and level as they're handled separately
+        // Handle FFmpeg-level options (profile, level)
         if (key === 'profile:v' || key === 'level') {
           args.push(`-${key}`, value.toString());
-        } else if (typeof value === 'string') {
-          args.push(`-${key}`, value);
         } else {
-          args.push(`-${key}`, value.toString());
+          // All other options go into x264-params for FFmpeg 8.0 compatibility
+          // Map common option names to x264 equivalents
+          let x264Key = key;
+          if (key === 'subq') x264Key = 'subme';  // subq -> subme for x264
+          if (key === 'me_method') x264Key = 'me'; // me_method -> me for x264
+
+          x264Params.push(`${x264Key}=${value}`);
         }
       });
+
+      // Add x264-params if we have any
+      if (x264Params.length > 0) {
+        args.push('-x264-params', x264Params.join(':'));
+      }
     }
 
     // Output file and container optimizations
@@ -384,18 +395,31 @@ export class NativeFFmpegEncoder implements VideoEncoder {
       let frameIndex = 0;
       let encodingComplete = false;
       let stdinError: Error | null = null;
+      let ffmpegStderr = '';
+
+      // Collect FFmpeg stderr for better error reporting
+      if (ffmpegProcess.stderr) {
+        ffmpegProcess.stderr.on('data', (data) => {
+          ffmpegStderr += data.toString();
+        });
+      }
 
       // Handle FFmpeg process completion
       ffmpegProcess.on('close', (code) => {
+        encodingComplete = true;
         if (code === 0) {
-          encodingComplete = true;
           if (stdinError) {
-            reject(stdinError);
+            reject(new Error(`Streaming completed but had error: ${stdinError.message}`));
           } else {
+            console.log('✅ FFmpeg encoding completed successfully');
             resolve();
           }
         } else {
-          reject(new Error(`FFmpeg process exited with code ${code}`));
+          const errorMsg = `FFmpeg process exited with code ${code}`;
+          const fullError = ffmpegStderr
+            ? `${errorMsg}\nFFmpeg stderr:\n${ffmpegStderr}`
+            : errorMsg;
+          reject(new Error(fullError));
         }
       });
 
@@ -403,54 +427,78 @@ export class NativeFFmpegEncoder implements VideoEncoder {
         reject(new Error(`FFmpeg process error: ${error.message}`));
       });
 
-      // Create readable stream for frame data
-      const frameStream = new Readable({
-        read() {
-          if (frameIndex >= frames.length) {
-            this.push(null); // End of stream
-            return;
-          }
-
-          const frame = frames[frameIndex];
-          const rgbaData = frame.imageData.data;
-
-          // Stream RGBA data directly (no conversion needed)
-          this.push(Buffer.from(rgbaData.buffer));
-
-          // Report progress for frame streaming
-          if (onProgress && frameIndex % 10 === 0) {
-            const memUsage = process.memoryUsage();
-            onProgress({
-              currentFrame: frameIndex,
-              totalFrames: frames.length,
-              encodingFps: 0, // Not encoding yet, just streaming
-              estimatedTimeRemaining: 0,
-              outputSize: 0,
-              memoryUsage: {
-                heapUsed: memUsage.heapUsed,
-                heapTotal: memUsage.heapTotal,
-                external: memUsage.external,
-              },
-            });
-          }
-
-          frameIndex++;
-        }
-      });
-
-      // Handle stream errors
-      frameStream.on('error', (error) => {
-        stdinError = error;
-      });
-
+      // Handle stdin errors more gracefully
       ffmpegProcess.stdin.on('error', (error) => {
         if (!encodingComplete) {
-          reject(new Error(`FFmpeg stdin error: ${error.message}`));
+          console.warn('⚠️ FFmpeg stdin error:', error.message);
+          // Don't immediately reject - wait for process to close
+          // This handles EPIPE errors when FFmpeg closes stdin early
+          stdinError = error;
         }
       });
 
-      // Pipe frame data to FFmpeg stdin
-      frameStream.pipe(ffmpegProcess.stdin);
+      // Write frames directly to stdin in smaller chunks
+      let writeIndex = 0;
+      let writePending = false;
+
+      const writeNextFrame = () => {
+        if (writeIndex >= frames.length) {
+          // All frames written, close stdin
+          console.log(`📝 All ${frames.length} frames written to FFmpeg`);
+          ffmpegProcess.stdin!.end();
+          return;
+        }
+
+        if (writePending || encodingComplete) {
+          return; // Wait for current write to complete
+        }
+
+        const frame = frames[writeIndex];
+        const rgbaData = frame.imageData.data;
+        const frameBuffer = Buffer.from(rgbaData.buffer);
+
+        // Report progress
+        if (onProgress && writeIndex % 10 === 0) {
+          const memUsage = process.memoryUsage();
+          onProgress({
+            currentFrame: writeIndex,
+            totalFrames: frames.length,
+            encodingFps: 0, // Not encoding yet, just streaming
+            estimatedTimeRemaining: 0,
+            outputSize: 0,
+            memoryUsage: {
+              heapUsed: memUsage.heapUsed,
+              heapTotal: memUsage.heapTotal,
+              external: memUsage.external,
+            },
+          });
+        }
+
+        writePending = true;
+        const success = ffmpegProcess.stdin!.write(frameBuffer, (error) => {
+          writePending = false;
+          if (error && !encodingComplete) {
+            console.warn(`⚠️ Frame ${writeIndex} write error:`, error.message);
+            stdinError = error;
+            return;
+          }
+          writeIndex++;
+          setImmediate(writeNextFrame); // Continue with next frame
+        });
+
+        if (!success) {
+          // Need to wait for drain event
+          ffmpegProcess.stdin!.once('drain', () => {
+            if (!encodingComplete) {
+              setImmediate(writeNextFrame);
+            }
+          });
+        }
+      };
+
+      // Start writing frames
+      console.log(`🎬 Starting to stream ${frames.length} frames to FFmpeg...`);
+      writeNextFrame();
     });
   }
 

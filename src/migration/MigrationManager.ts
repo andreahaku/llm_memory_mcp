@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryScope, MemoryType } from '../types/Memory.js';
+import type { MemoryItem, MemoryScope, MemoryType, MemoryConfig } from '../types/Memory.js';
 import type { StorageAdapter, StorageAdapterFactory } from '../storage/StorageAdapter.js';
 import { FileStorageAdapterFactory } from '../storage/FileStorageAdapter.js';
 import { ScopeResolver } from '../scope/ScopeResolver.js';
@@ -9,14 +9,17 @@ let VideoStorageAdapterFactory: any = null;
 async function loadVideoStorageAdapterFactory() {
   if (!VideoStorageAdapterFactory) {
     try {
+      console.log('[MigrationManager] 🔄 Loading VideoStorageAdapterFactory...');
       const videoModule = await import('../storage/VideoStorageAdapter.js');
       VideoStorageAdapterFactory = videoModule.VideoStorageAdapterFactory;
+      console.log('[MigrationManager] ✅ VideoStorageAdapterFactory loaded successfully');
       return VideoStorageAdapterFactory;
     } catch (error) {
-      console.warn('Video storage adapter not available:', (error as Error).message);
+      console.warn('[MigrationManager] ❌ Video storage adapter not available:', (error as Error).message);
       return null;
     }
   }
+  console.log('[MigrationManager] ✅ VideoStorageAdapterFactory already cached');
   return VideoStorageAdapterFactory;
 }
 
@@ -87,10 +90,12 @@ export class MigrationManager {
     }
 
     if (backend === 'video') {
+      console.log('[MigrationManager] 🎬 Requesting video storage factory...');
       const VideoFactory = await loadVideoStorageAdapterFactory();
       if (!VideoFactory) {
         throw new Error('Video storage backend is not available. FFmpeg dependencies may not be installed or failed to load.');
       }
+      console.log('[MigrationManager] 🏭 Creating VideoStorageAdapterFactory instance...');
       return new VideoFactory();
     }
 
@@ -128,8 +133,20 @@ export class MigrationManager {
       throw new Error(`${targetBackend} storage backend is not available (missing dependencies)`);
     }
 
+    console.log(`[MigrationManager] 📁 Creating source adapter (${sourceBackend}) for: ${sourceDir}`);
     const sourceAdapter = sourceFactory.create(sourceDir, scope);
+
+    console.log(`[MigrationManager] 📁 Creating target adapter (${targetBackend}) for: ${targetDir}`);
     const targetAdapter = targetFactory.create(targetDir, scope);
+
+    // Initialize adapters to trigger video encoder setup
+    if (targetBackend === 'video') {
+      console.log('[MigrationManager] 🎯 Initializing video storage adapter...');
+      if (targetAdapter.initialize) {
+        await targetAdapter.initialize();
+      }
+      console.log('[MigrationManager] ✅ Video storage adapter initialized');
+    }
 
     const progress: MigrationProgress = {
       phase: 'initialization',
@@ -171,7 +188,9 @@ export class MigrationManager {
         try {
           const item = await sourceAdapter.readItem(itemId);
           if (item) {
+            console.log(`[MigrationManager] 📝 Writing item ${itemId} to ${targetBackend} storage...`);
             await targetAdapter.writeItem(item);
+            console.log(`[MigrationManager] ✅ Successfully wrote item ${itemId}`);
             progress.itemsProcessed++;
           } else {
             progress.errors.push({ id: itemId, error: 'Failed to read item from source' });
@@ -189,9 +208,11 @@ export class MigrationManager {
       onProgress?.(progress);
 
       const sourceConfig = sourceAdapter.readConfig();
-      if (sourceConfig) {
-        targetAdapter.writeConfig(sourceConfig);
-      }
+      const updatedConfig: MemoryConfig = sourceConfig
+        ? { ...sourceConfig, storage: { ...(sourceConfig.storage || {}), backend: targetBackend } }
+        : { version: '1.0.0', storage: { backend: targetBackend } };
+
+      targetAdapter.writeConfig(updatedConfig);
 
       // Phase 5: Replace source with target (atomic operation)
       if (progress.errors.length === 0) {
