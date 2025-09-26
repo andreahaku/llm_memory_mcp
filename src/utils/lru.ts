@@ -26,6 +26,30 @@ export class LRU<K, V> {
     }
   }
 
+  has(key: K): boolean {
+    return this.map.has(key);
+  }
+
+  delete(key: K): boolean {
+    return this.map.delete(key);
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+
+  keys(): IterableIterator<K> {
+    return this.map.keys();
+  }
+
+  values(): IterableIterator<V> {
+    return this.map.values();
+  }
+
+  entries(): IterableIterator<[K, V]> {
+    return this.map.entries();
+  }
+
   clear(): void {
     this.map.clear();
   }

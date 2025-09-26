@@ -1,6 +1,6 @@
 /**
- * Video encoding module for LLM Memory MCP Server
- * Implements FFmpeg.wasm-based video encoding for QR code storage
+ * Video encoding and decoding module for LLM Memory MCP Server
+ * Implements FFmpeg-based video encoding/decoding for QR code storage
  */
 
 // Core interfaces and types
@@ -13,6 +13,20 @@ export type {
   EncoderCapabilities,
   EncoderFactory,
 } from './VideoEncoder.js';
+
+// Video decoding interfaces and types
+export type {
+  VideoDecodingOptions,
+  VideoDecodingResult,
+  BatchVideoDecodingResult,
+} from './VideoDecoder.js';
+
+// Frame extraction interfaces and types
+export type {
+  ImageDataLike,
+  FrameExtractionOptions,
+  FrameExtractionResult,
+} from './FrameExtractor.js';
 
 // Default configurations and profiles
 export {
@@ -53,6 +67,26 @@ export {
   FrameTypeBinary,
   FrameFlags,
 } from './FrameIndex.js';
+
+// Video decoding implementations
+export {
+  VideoDecoder,
+  createVideoDecoder,
+  isVideoDecodingSupported,
+} from './VideoDecoder.js';
+
+// Frame extraction implementations
+export {
+  FrameExtractor,
+  createFrameExtractor,
+  isFrameExtractionSupported,
+} from './FrameExtractor.js';
+
+// Video segment management with decoding
+export {
+  VideoSegmentManager,
+  VideoSegmentManagerFactory,
+} from './VideoSegmentManager.js';
 
 // Utility functions
 export {

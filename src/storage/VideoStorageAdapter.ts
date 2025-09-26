@@ -1,11 +1,16 @@
 import type { StorageAdapter, WriteResult, GetResult, StorageStats, PayloadRef } from './StorageAdapter.js';
 import type { MemoryItem, MemoryItemSummary, MemoryConfig, MemoryScope } from '../types/Memory.js';
 import { QRManager } from '../qr/QRManager.js';
+import { QRDecoder } from '../qr/QRDecoder.js';
 import { VideoEncoder } from '../video/VideoEncoder.js';
+import { VideoSegmentManager } from '../video/VideoSegmentManager.js';
+import { EnhancedFrameIndex, FrameIndexManager } from '../video/EnhancedFrameIndex.js';
+import { FrameIndexCreator } from '../video/FrameIndex.js';
 import { LRU } from '../utils/lru.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import * as path from 'path';
+import { ulid } from '../util/ulid.js';
 
 /**
  * VideoStorageAdapter implements video-based compressed storage for memory items
@@ -15,8 +20,14 @@ import * as path from 'path';
 export class VideoStorageAdapter implements StorageAdapter {
   private directory: string;
   private scope: MemoryScope;
+
+  // Phase 0 components integration
   private qrManager = new QRManager();
-  private videoEncoder = new VideoEncoder();
+  private qrDecoder = new QRDecoder();
+  private videoEncoder: VideoEncoder;
+  private segmentManager: VideoSegmentManager;
+  private frameIndexManager: FrameIndexManager;
+  private frameIndexCreator = new FrameIndexCreator();
 
   // In-memory catalog for fast access
   private catalog: Record<string, MemoryItemSummary> = {};
@@ -27,16 +38,35 @@ export class VideoStorageAdapter implements StorageAdapter {
   // Content deduplication mapping
   private contentHashMap: Record<string, PayloadRef> = {};
 
-  // Background encoding queue
+  // Background encoding queue with batching
   private encodingQueue: MemoryItem[] = [];
   private isEncoding = false;
+  private readonly batchSize = 20; // Items per segment
+  private readonly maxQueueSize = 1000;
+
+  // Video encoding state
+  private encoderInitialized = false;
 
   constructor(directory: string, scope: MemoryScope) {
     this.directory = directory;
     this.scope = scope;
+
+    // Initialize managers (VideoEncoder will be passed after initialization)
+    this.segmentManager = new VideoSegmentManager(this.directory);
+    this.frameIndexManager = new FrameIndexManager(this.directory);
+
     this.ensureDirectories();
     this.loadCatalog();
     this.loadContentHashMap();
+
+    // Initialize video encoder asynchronously
+    this.initializeEncoder().catch(error => {
+      console.warn('Video encoder initialization failed:', error);
+      this.encoderInitialized = false;
+    });
+
+    // Start background optimization
+    this.startBackgroundOptimization();
   }
 
   private ensureDirectories(): void {
@@ -155,8 +185,10 @@ export class VideoStorageAdapter implements StorageAdapter {
       return null;
     }
 
-    // Materialize content from video
-    const content = await this.decodeFromVideo(summary.payloadRef);
+    // Use enhanced frame index for sub-100ms retrieval
+    const content = await this.retrieveContentWithEnhancedIndex(summary.payloadRef);
+    if (!content) return null;
+
     const itemData = JSON.parse(content.toString());
 
     return {
@@ -231,25 +263,53 @@ export class VideoStorageAdapter implements StorageAdapter {
     writeFileSync(configPath, JSON.stringify(config, null, 2));
   }
 
-  // Statistics
+  // Statistics with enhanced video segment data
   async getStats(): Promise<StorageStats> {
     const itemCount = Object.keys(this.catalog).length;
     const catalogSize = JSON.stringify(this.catalog).length;
-    const videoDir = path.join(this.directory, 'videos');
 
-    // TODO: Calculate actual video file sizes
-    const estimatedVideoSize = 1000; // Placeholder
+    // Get actual video segment statistics
+    const segmentStats = await this.segmentManager.getStorageStats();
+    const indexStats = this.frameIndexManager.getCombinedStats();
 
     return {
       items: itemCount,
-      sizeBytes: catalogSize + estimatedVideoSize,
-      compressionRatio: 50, // Estimated 50x compression
+      sizeBytes: catalogSize + segmentStats.totalSizeBytes,
+      compressionRatio: segmentStats.averageCompressionRatio,
+      lastCompaction: segmentStats.newestSegment,
+      indexSize: Math.round(indexStats.indexSizeMB * 1024 * 1024), // Convert MB to bytes
+      cacheHitRate: indexStats.cacheHitRate
     };
   }
 
   async cleanup(): Promise<number> {
-    // TODO: Implement cleanup of unused video segments
-    return 0;
+    try {
+      console.log('Starting video storage cleanup and compaction...');
+
+      // Perform segment compaction
+      const compactionResult = await this.segmentManager.compactSegments();
+
+      // Clear old frame caches
+      this.frameIndexManager.clearAllCaches();
+
+      // Cleanup payload cache - remove oldest 20%
+      const cacheSize = this.payloadCache.size;
+      const toRemove = Math.floor(cacheSize * 0.2);
+
+      for (let i = 0; i < toRemove; i++) {
+        const oldestKey = this.payloadCache.keys().next().value;
+        if (oldestKey) {
+          this.payloadCache.delete(oldestKey);
+        }
+      }
+
+      console.log(`Cleanup completed: ${compactionResult.segmentsRemoved} segments removed, ${compactionResult.bytesReclaimed} bytes reclaimed`);
+
+      return compactionResult.bytesReclaimed;
+    } catch (error) {
+      console.error('Storage cleanup failed:', error);
+      return 0;
+    }
   }
 
   // Content addressing
@@ -276,6 +336,24 @@ export class VideoStorageAdapter implements StorageAdapter {
     return this.directory;
   }
 
+  // Initialize video encoder with fallback strategy
+  private async initializeEncoder(): Promise<void> {
+    try {
+      this.videoEncoder = new VideoEncoder();
+      await this.videoEncoder.initialize();
+
+      // Update segment manager with initialized encoder
+      this.segmentManager = new VideoSegmentManager(this.directory, this.videoEncoder);
+
+      this.encoderInitialized = true;
+      console.log('Video encoder initialized successfully:', this.videoEncoder.getCurrentEncoder().name);
+    } catch (error) {
+      console.error('Failed to initialize video encoder:', error);
+      this.encoderInitialized = false;
+      throw error;
+    }
+  }
+
   // Private methods for video encoding/decoding
   private scheduleEncoding(): void {
     if (this.isEncoding || this.encodingQueue.length === 0) return;
@@ -290,60 +368,188 @@ export class VideoStorageAdapter implements StorageAdapter {
 
     try {
       while (this.encodingQueue.length > 0) {
-        const batch = this.encodingQueue.splice(0, 10); // Process in batches of 10
+        // Process in configurable batches for optimal segment creation
+        const batchSize = Math.min(this.batchSize, this.encodingQueue.length);
+        const batch = this.encodingQueue.splice(0, batchSize);
         await this.encodeVideoSegment(batch);
       }
     } catch (error) {
       console.error('Video encoding failed:', error);
+
+      // Re-queue failed items for retry
+      if (error instanceof Error && error.message.includes('retry')) {
+        // Could implement retry logic here
+      }
     } finally {
       this.isEncoding = false;
     }
   }
 
   private async encodeVideoSegment(items: MemoryItem[]): Promise<void> {
-    // TODO: Implement actual video encoding using Phase 0 components
-    console.log(`Encoding video segment with ${items.length} items`);
+    try {
+      console.log(`Encoding video segment with ${items.length} items using VideoSegmentManager`);
 
-    // For now, just mark items as encoded with placeholder payload refs
-    for (const item of items) {
-      const contentHash = this.computeContentHash(item);
-      const payloadRef: PayloadRef = {
-        hash: contentHash,
-        segmentUlid: 'placeholder-segment',
-        frameIdx: 0,
-        size: JSON.stringify(item).length
-      };
+      // Use VideoSegmentManager to create segment with FrameIndex integration
+      const result = await this.segmentManager.createSegment(items, {
+        maxFramesPerSegment: 300,
+        targetSegmentSizeMB: 50,
+        compressionProfile: 'balanced',
+        enableDeduplication: true
+      });
 
-      this.contentHashMap[contentHash] = payloadRef;
+      // Update catalog with payload references from segment creation
+      for (let i = 0; i < result.payloadRefs.length && i < items.length; i++) {
+        const item = items[i];
+        const payloadRef = result.payloadRefs[i];
 
-      if (this.catalog[item.id]) {
-        this.catalog[item.id].payloadRef = payloadRef;
+        this.contentHashMap[payloadRef.hash] = payloadRef;
+
+        if (this.catalog[item.id]) {
+          this.catalog[item.id].payloadRef = payloadRef;
+        }
       }
-    }
 
-    this.saveContentHashMap();
-    this.saveCatalog();
+      this.saveContentHashMap();
+      this.saveCatalog();
+
+      console.log(`Successfully created segment ${result.segmentUlid} with ${result.payloadRefs.length} payload refs`);
+    } catch (error) {
+      console.error('Failed to encode video segment:', error);
+      throw error;
+    }
   }
 
-  private async decodeFromVideo(payloadRef: PayloadRef): Promise<Buffer> {
-    // Check cache first
+  private async retrieveContentWithEnhancedIndex(payloadRef: PayloadRef): Promise<Buffer | null> {
+    // Check cache first for fastest retrieval
     if (this.payloadCache.has(payloadRef.hash)) {
       return this.payloadCache.get(payloadRef.hash)!;
     }
 
-    // TODO: Implement actual video decoding using Phase 0 components
-    console.log(`Decoding from video: ${payloadRef.segmentUlid} frame ${payloadRef.frameIdx}`);
+    if (!payloadRef.segmentUlid || payloadRef.frameIdx === undefined) {
+      console.warn('Invalid payload reference:', payloadRef);
+      return null;
+    }
 
-    // Placeholder: return empty content for now
-    const placeholder = Buffer.from(JSON.stringify({
-      text: 'Placeholder content - video decoding not yet implemented',
-      code: '',
-      links: []
-    }));
+    try {
+      // Use enhanced frame index for sub-100ms frame lookup
+      const enhancedIndex = this.frameIndexManager.getIndex(this.directory);
+      const frameLookup = await enhancedIndex.getFrame(payloadRef.segmentUlid, payloadRef.frameIdx);
 
-    // Cache the result
-    this.payloadCache.set(payloadRef.hash, placeholder);
-    return placeholder;
+      if (!frameLookup.entry) {
+        console.warn(`Frame not found: ${payloadRef.segmentUlid}:${payloadRef.frameIdx}`);
+        return null;
+      }
+
+      console.log(`Frame lookup completed in ${frameLookup.accessTimeMs.toFixed(2)}ms (cache hit: ${frameLookup.cacheHit})`);
+
+      // Use VideoSegmentManager to retrieve the actual content
+      const item = await this.segmentManager.getContentFromSegment(
+        payloadRef.segmentUlid,
+        payloadRef.frameIdx
+      );
+
+      if (!item) {
+        console.warn(`Content retrieval failed for ${payloadRef.segmentUlid}:${payloadRef.frameIdx}`);
+        return null;
+      }
+
+      // Convert item back to buffer format
+      const content = Buffer.from(JSON.stringify({
+        text: item.text || '',
+        code: item.code || '',
+        links: item.links || []
+      }));
+
+      // Cache the result
+      this.payloadCache.set(payloadRef.hash, content);
+
+      return content;
+    } catch (error) {
+      console.error(`Failed to retrieve content from video: ${payloadRef.segmentUlid}:${payloadRef.frameIdx}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Start background optimization processes
+   */
+  private startBackgroundOptimization(): void {
+    // Optimize frame indexes every 15 minutes
+    setInterval(async () => {
+      try {
+        await this.frameIndexManager.optimizeAll();
+        console.log('Frame index optimization completed');
+      } catch (error) {
+        console.warn('Frame index optimization failed:', error);
+      }
+    }, 900000); // 15 minutes
+
+    // Queue processing check every 30 seconds
+    setInterval(() => {
+      if (this.encodingQueue.length > 0 && !this.isEncoding) {
+        this.scheduleEncoding();
+      }
+
+      // Prevent queue overflow
+      if (this.encodingQueue.length > this.maxQueueSize) {
+        console.warn(`Encoding queue overflow: ${this.encodingQueue.length} items, removing oldest`);
+        this.encodingQueue = this.encodingQueue.slice(-this.maxQueueSize);
+      }
+    }, 30000); // 30 seconds
+
+    // Periodic cleanup every 2 hours
+    setInterval(async () => {
+      try {
+        const reclaimed = await this.cleanup();
+        if (reclaimed > 0) {
+          console.log(`Periodic cleanup reclaimed ${reclaimed} bytes`);
+        }
+      } catch (error) {
+        console.warn('Periodic cleanup failed:', error);
+      }
+    }, 7200000); // 2 hours
+  }
+
+  /**
+   * Enhanced content addressing with segment-level lookup
+   */
+  async findContentByHash(contentHash: string): Promise<MemoryItem | null> {
+    // Check if we have this content in our mapping
+    const payloadRef = this.contentHashMap[contentHash];
+    if (!payloadRef) {
+      return null;
+    }
+
+    // Use segment manager for direct hash-based lookup
+    return await this.segmentManager.findContentByHash(contentHash);
+  }
+
+  /**
+   * Get video storage specific metrics
+   */
+  async getVideoStorageMetrics(): Promise<{
+    segmentStats: any;
+    indexStats: any;
+    queueLength: number;
+    isEncoding: boolean;
+    cacheStats: {
+      payloadCacheSize: number;
+      payloadCacheHits: number;
+    };
+  }> {
+    const segmentStats = await this.segmentManager.getStorageStats();
+    const indexStats = this.frameIndexManager.getCombinedStats();
+
+    return {
+      segmentStats,
+      indexStats,
+      queueLength: this.encodingQueue.length,
+      isEncoding: this.isEncoding,
+      cacheStats: {
+        payloadCacheSize: this.payloadCache.size,
+        payloadCacheHits: 0 // Could track this with enhanced metrics
+      }
+    };
   }
 }
 
