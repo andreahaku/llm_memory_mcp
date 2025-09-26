@@ -2,15 +2,15 @@
   "name": "llm-memory-mcp",
   "version": "1.0.0",
   "description": "Persistent memory MCP server for LLM tools with project-specific and global storage",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "bin": {
-    "llm-memory-mcp": "dist/index.js",
-    "llm-memory-migrate": "dist/cli/migration-cli.js"
+    "llm-memory-mcp": "dist/src/index.js",
+    "llm-memory-migrate": "dist/src/cli/migration-cli.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "test": "jest",
     "test:all": "node tests/test-all-tools.js",
     "test:frame-indexing": "tsx test/frame-indexing-validation.ts",
