@@ -4,7 +4,8 @@
   "description": "Persistent memory MCP server for LLM tools with project-specific and global storage",
   "main": "dist/index.js",
   "bin": {
-    "llm-memory-mcp": "dist/index.js"
+    "llm-memory-mcp": "dist/index.js",
+    "llm-memory-migrate": "dist/cli/migration-cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -19,7 +20,11 @@
     "benchmark:full": "tsx benchmarks/comprehensive-benchmark.ts --iterations 20",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "preinstall": "npx only-allow pnpm"
+    "preinstall": "npx only-allow pnpm",
+    "migrate:storage": "tsx src/cli/migration-cli.ts storage",
+    "migrate:scope": "tsx src/cli/migration-cli.ts scope",
+    "migrate:status": "tsx src/cli/migration-cli.ts status",
+    "migrate:validate": "tsx src/cli/migration-cli.ts validate"
   },
   "packageManager": "pnpm@9.9.0",
   "keywords": [
@@ -37,6 +42,7 @@
     "@ffmpeg/ffmpeg": "^0.12.10",
     "@ffmpeg/util": "^0.12.1",
     "@modelcontextprotocol/sdk": "^0.4.0",
+    "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
     "qrcode-generator": "^2.0.4",
     "uuid": "^9.0.1",

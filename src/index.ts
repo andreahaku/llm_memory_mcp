@@ -12,7 +12,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { MemoryManager } from './MemoryManager.js';
+import { MigrationManager } from './migration/MigrationManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import type { StorageBackend, StorageMigrationOptions, ScopeMigrationOptions } from './migration/MigrationManager.js';
 
 function log(message: string, ...args: any[]) {
   console.error(`[LLM-Memory] ${new Date().toISOString()} ${message}`, ...args);
@@ -21,6 +23,7 @@ function log(message: string, ...args: any[]) {
 class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
+  private migration: MigrationManager;
 
   constructor() {
     this.server = new Server(
@@ -32,6 +35,7 @@ class LLMKnowledgeBaseServer {
 
     log('Initializing LLM Memory MCP server');
     this.memory = new MemoryManager();
+    this.migration = new MigrationManager();
     this.setupServerEventLogging();
     this.setupHandlers();
     log('Server initialization complete');
@@ -366,6 +370,87 @@ class LLMKnowledgeBaseServer {
               scope: { type: 'string', enum: ['global','local','committed','all'] },
             },
             required: ['scope'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'migration.storage_backend',
+          description: 'Migrate storage between file and video backends within same scope',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              sourceBackend: { type: 'string', enum: ['file', 'video'] },
+              targetBackend: { type: 'string', enum: ['file', 'video'] },
+              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
+              dryRun: { type: 'boolean', description: 'Preview migration without executing' },
+              validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
+              backupBeforeMigration: { type: 'boolean', description: 'Create backup before migration' },
+            },
+            required: ['sourceBackend', 'targetBackend', 'scope'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'migration.scope',
+          description: 'Migrate filtered items between memory scopes (global/local/committed)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              sourceScope: { type: 'string', enum: ['global', 'local', 'committed'] },
+              targetScope: { type: 'string', enum: ['global', 'local', 'committed'] },
+              contentFilter: {
+                type: 'object',
+                properties: {
+                  query: { type: 'string', description: 'Search query to match in title/text/code' },
+                  tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
+                  types: { type: 'array', items: { type: 'string', enum: ['snippet','pattern','config','insight','runbook','fact','note'] }, description: 'Memory types to include' },
+                  titlePatterns: { type: 'array', items: { type: 'string' }, description: 'Regex patterns for title matching' },
+                  contentPatterns: { type: 'array', items: { type: 'string' }, description: 'Regex patterns for content matching' },
+                  files: { type: 'array', items: { type: 'string' }, description: 'File paths to filter by' },
+                  dateRange: {
+                    type: 'object',
+                    properties: {
+                      start: { type: 'string', format: 'date-time' },
+                      end: { type: 'string', format: 'date-time' }
+                    },
+                    required: ['start', 'end'],
+                    description: 'Date range for filtering items'
+                  }
+                },
+                additionalProperties: false
+              },
+              storageBackend: { type: 'string', enum: ['file', 'video'], description: 'Storage backend to use' },
+              dryRun: { type: 'boolean', description: 'Preview migration without executing' },
+              validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
+            },
+            required: ['sourceScope', 'targetScope'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'migration.status',
+          description: 'Get migration status and storage statistics for a scope',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
+              backend: { type: 'string', enum: ['file', 'video'] },
+            },
+            required: ['scope', 'backend'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'migration.validate',
+          description: 'Validate migration integrity and consistency',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
+              backend: { type: 'string', enum: ['file', 'video'] },
+              expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
+            },
+            required: ['scope', 'backend'],
             additionalProperties: false,
           },
         },
@@ -763,6 +848,149 @@ class LLMKnowledgeBaseServer {
             }
           }
 
+          case 'migration.storage_backend': {
+            const sourceBackend = args.sourceBackend as StorageBackend;
+            const targetBackend = args.targetBackend as StorageBackend;
+            const scope = args.scope as MemoryScope;
+            const dryRun = args.dryRun as boolean || false;
+            const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
+            const backupBeforeMigration = args.backupBeforeMigration as boolean ?? true;
+
+            log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope${dryRun ? ' (DRY RUN)' : ''}`);
+
+            const progressLog: string[] = [];
+            const options: StorageMigrationOptions = {
+              sourceBackend,
+              targetBackend,
+              scope,
+              dryRun,
+              validateAfterMigration,
+              backupBeforeMigration,
+              onProgress: (progress) => {
+                const msg = `[${progress.phase}] ${progress.itemsProcessed}/${progress.totalItems} items${progress.currentItem ? ` (${progress.currentItem})` : ''} - ${progress.errors.length} errors`;
+                progressLog.push(msg);
+                log(`Migration progress: ${msg}`);
+              }
+            };
+
+            const result = await this.migration.migrateStorageBackend(options);
+
+            const summary = {
+              migration: 'storage_backend',
+              sourceBackend,
+              targetBackend,
+              scope,
+              dryRun,
+              result,
+              progressLog: progressLog.slice(-10) // Last 10 progress messages
+            };
+
+            log(`Storage migration completed: ${result.success ? 'SUCCESS' : 'FAILED'} - ${result.targetItems}/${result.sourceItems} items`);
+            return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+          }
+
+          case 'migration.scope': {
+            const sourceScope = args.sourceScope as MemoryScope;
+            const targetScope = args.targetScope as MemoryScope;
+            const contentFilter = args.contentFilter as ScopeMigrationOptions['contentFilter'];
+            const storageBackend = (args.storageBackend as StorageBackend) || 'file';
+            const dryRun = args.dryRun as boolean || false;
+            const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
+
+            log(`Starting scope migration: ${sourceScope} → ${targetScope}${dryRun ? ' (DRY RUN)' : ''}`);
+
+            if (contentFilter) {
+              const filterSummary = {
+                query: contentFilter.query || 'none',
+                tags: contentFilter.tags?.length || 0,
+                types: contentFilter.types?.length || 0,
+                patterns: (contentFilter.titlePatterns?.length || 0) + (contentFilter.contentPatterns?.length || 0),
+                files: contentFilter.files?.length || 0,
+                dateRange: contentFilter.dateRange ? 'specified' : 'none'
+              };
+              log(`Content filter applied: ${JSON.stringify(filterSummary)}`);
+            }
+
+            const progressLog: string[] = [];
+            const options: ScopeMigrationOptions = {
+              sourceScope,
+              targetScope,
+              contentFilter,
+              storageBackend,
+              dryRun,
+              validateAfterMigration,
+              onProgress: (progress) => {
+                const msg = `[${progress.phase}] ${progress.itemsProcessed}/${progress.totalItems} items${progress.currentItem ? ` (${progress.currentItem})` : ''} - ${progress.errors.length} errors`;
+                progressLog.push(msg);
+                log(`Migration progress: ${msg}`);
+              }
+            };
+
+            const result = await this.migration.migrateBetweenScopes(options);
+
+            const summary = {
+              migration: 'scope',
+              sourceScope,
+              targetScope,
+              storageBackend,
+              dryRun,
+              contentFilter,
+              result,
+              progressLog: progressLog.slice(-10) // Last 10 progress messages
+            };
+
+            log(`Scope migration completed: ${result.success ? 'SUCCESS' : 'FAILED'} - ${result.targetItems}/${result.sourceItems} items`);
+            return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+          }
+
+          case 'migration.status': {
+            const scope = args.scope as MemoryScope;
+            const backend = args.backend as StorageBackend;
+
+            log(`Getting migration status: scope=${scope}, backend=${backend}`);
+
+            const status = await this.migration.getMigrationStatus(scope, backend);
+
+            log(`Migration status retrieved: ${status.itemCount} items, ${(status.storageSize / 1024).toFixed(1)}KB`);
+            return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+          }
+
+          case 'migration.validate': {
+            const scope = args.scope as MemoryScope;
+            const backend = args.backend as StorageBackend;
+            const expectedItems = args.expectedItems as string[] || [];
+
+            log(`Validating migration: scope=${scope}, backend=${backend}${expectedItems.length > 0 ? `, checking ${expectedItems.length} items` : ''}`);
+
+            // Use a simple validation by getting the current status
+            const status = await this.migration.getMigrationStatus(scope, backend);
+
+            // Create a basic validation result
+            const validation = {
+              success: true,
+              scope,
+              backend,
+              foundItems: status.itemCount,
+              expectedItems: expectedItems.length,
+              storageSize: status.storageSize,
+              issues: [] as string[]
+            };
+
+            // Basic validation checks
+            if (expectedItems.length > 0 && status.itemCount !== expectedItems.length) {
+              validation.success = false;
+              validation.issues.push(`Item count mismatch: expected ${expectedItems.length}, found ${status.itemCount}`);
+            }
+
+            if (status.storageSize === 0 && status.itemCount > 0) {
+              validation.success = false;
+              validation.issues.push('Storage size is 0 but items are present - potential corruption');
+            }
+
+            log(`Migration validation: ${validation.success ? 'PASSED' : 'FAILED'} - ${validation.issues.length} issues`);
+            return { content: [{ type: 'text', text: JSON.stringify(validation, null, 2) }] };
+          }
+
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         }
@@ -780,9 +1008,6 @@ class LLMKnowledgeBaseServer {
           `Tool execution failed: ${errorMessage}`
         );
       }
-
-      const duration = Date.now() - startTime;
-      log(`✅ Tool completed: ${name} (${duration}ms)`);
     });
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -874,9 +1099,6 @@ class LLMKnowledgeBaseServer {
           `Resource access failed: ${errorMessage}`
         );
       }
-
-      const duration = Date.now() - startTime;
-      log(`✅ Resource served: ${uri} (${duration}ms)`);
     });
   }
 

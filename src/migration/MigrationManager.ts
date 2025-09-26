@@ -1,0 +1,588 @@
+import type { MemoryItem, MemoryScope, MemoryType } from '../types/Memory.js';
+import type { StorageAdapter, StorageAdapterFactory } from '../storage/StorageAdapter.js';
+import { FileStorageAdapterFactory } from '../storage/FileStorageAdapter.js';
+import { VideoStorageAdapterFactory } from '../storage/VideoStorageAdapter.js';
+import { ScopeResolver } from '../scope/ScopeResolver.js';
+import { ulid } from '../util/ulid.js';
+
+export type StorageBackend = 'file' | 'video';
+
+export interface MigrationProgress {
+  phase: string;
+  itemsProcessed: number;
+  totalItems: number;
+  currentItem?: string;
+  errors: Array<{ id: string; error: string }>;
+  startTime: Date;
+  estimatedCompletion?: Date;
+}
+
+export interface StorageMigrationOptions {
+  sourceBackend: StorageBackend;
+  targetBackend: StorageBackend;
+  scope: MemoryScope;
+  dryRun?: boolean;
+  validateAfterMigration?: boolean;
+  backupBeforeMigration?: boolean;
+  onProgress?: (progress: MigrationProgress) => void;
+}
+
+export interface ScopeMigrationOptions {
+  sourceScope: MemoryScope;
+  targetScope: MemoryScope;
+  contentFilter?: {
+    query?: string;
+    tags?: string[];
+    types?: MemoryType[];
+    titlePatterns?: string[];
+    contentPatterns?: string[];
+    files?: string[];
+    dateRange?: { start: string; end: string };
+  };
+  storageBackend?: StorageBackend;
+  dryRun?: boolean;
+  validateAfterMigration?: boolean;
+  onProgress?: (progress: MigrationProgress) => void;
+}
+
+export interface MigrationValidationResult {
+  success: boolean;
+  sourceItems: number;
+  targetItems: number;
+  missingItems: string[];
+  corruptedItems: string[];
+  inconsistencies: Array<{ id: string; issue: string }>;
+}
+
+/**
+ * MigrationManager handles both storage backend migrations (file ↔ video)
+ * and scope migrations (global ↔ local ↔ committed) with intelligent filtering
+ */
+export class MigrationManager {
+  private scopeResolver = new ScopeResolver();
+  private storageFactories: Record<StorageBackend, StorageAdapterFactory> = {
+    file: new FileStorageAdapterFactory(),
+    video: new VideoStorageAdapterFactory()
+  };
+
+  /**
+   * Migrate storage backend (file ↔ video) within the same scope
+   */
+  async migrateStorageBackend(options: StorageMigrationOptions): Promise<MigrationValidationResult> {
+    const {
+      sourceBackend,
+      targetBackend,
+      scope,
+      dryRun = false,
+      validateAfterMigration = true,
+      backupBeforeMigration = true,
+      onProgress
+    } = options;
+
+    console.log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope`);
+
+    // Get directories for source and target
+    const sourceDir = this.scopeResolver.getScopeDirectory(scope);
+    const targetDir = `${sourceDir}_migration_${Date.now()}`;
+
+    // Initialize storage adapters
+    const sourceAdapter = this.storageFactories[sourceBackend].create(sourceDir, scope);
+    const targetAdapter = this.storageFactories[targetBackend].create(targetDir, scope);
+
+    const progress: MigrationProgress = {
+      phase: 'initialization',
+      itemsProcessed: 0,
+      totalItems: 0,
+      errors: [],
+      startTime: new Date()
+    };
+
+    try {
+      // Phase 1: Read source catalog and prepare
+      progress.phase = 'reading_source';
+      onProgress?.(progress);
+
+      const sourceCatalog = sourceAdapter.readCatalog();
+      const sourceItemIds = Object.keys(sourceCatalog);
+      progress.totalItems = sourceItemIds.length;
+
+      if (dryRun) {
+        console.log(`DRY RUN: Would migrate ${progress.totalItems} items from ${sourceBackend} to ${targetBackend}`);
+        return this.validateMigration(sourceAdapter, targetAdapter, sourceItemIds);
+      }
+
+      // Phase 2: Backup if requested
+      if (backupBeforeMigration) {
+        progress.phase = 'creating_backup';
+        onProgress?.(progress);
+        await this.createBackup(sourceAdapter, scope, sourceBackend);
+      }
+
+      // Phase 3: Migrate items
+      progress.phase = 'migrating_items';
+      onProgress?.(progress);
+
+      for (const itemId of sourceItemIds) {
+        progress.currentItem = itemId;
+        onProgress?.(progress);
+
+        try {
+          const item = await sourceAdapter.readItem(itemId);
+          if (item) {
+            await targetAdapter.writeItem(item);
+            progress.itemsProcessed++;
+          } else {
+            progress.errors.push({ id: itemId, error: 'Failed to read item from source' });
+          }
+        } catch (error) {
+          progress.errors.push({
+            id: itemId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      // Phase 4: Migrate configuration
+      progress.phase = 'migrating_config';
+      onProgress?.(progress);
+
+      const sourceConfig = sourceAdapter.readConfig();
+      if (sourceConfig) {
+        targetAdapter.writeConfig(sourceConfig);
+      }
+
+      // Phase 5: Replace source with target (atomic operation)
+      if (progress.errors.length === 0) {
+        progress.phase = 'finalizing';
+        onProgress?.(progress);
+
+        await this.atomicReplace(sourceDir, targetDir);
+      }
+
+      // Phase 6: Validation
+      let validationResult: MigrationValidationResult = {
+        success: true,
+        sourceItems: progress.totalItems,
+        targetItems: progress.itemsProcessed,
+        missingItems: [],
+        corruptedItems: [],
+        inconsistencies: []
+      };
+
+      if (validateAfterMigration) {
+        progress.phase = 'validating';
+        onProgress?.(progress);
+
+        const finalAdapter = this.storageFactories[targetBackend].create(sourceDir, scope);
+        validationResult = await this.validateMigration(
+          null, // Source no longer available after replacement
+          finalAdapter,
+          sourceItemIds
+        );
+      }
+
+      progress.phase = 'completed';
+      progress.estimatedCompletion = new Date();
+      onProgress?.(progress);
+
+      console.log(`Migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
+
+      return validationResult;
+
+    } catch (error) {
+      console.error('Migration failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Migrate items between scopes with intelligent content filtering
+   */
+  async migrateBetweenScopes(options: ScopeMigrationOptions): Promise<MigrationValidationResult> {
+    const {
+      sourceScope,
+      targetScope,
+      contentFilter,
+      storageBackend = 'file',
+      dryRun = false,
+      validateAfterMigration = true,
+      onProgress
+    } = options;
+
+    console.log(`Starting scope migration: ${sourceScope} → ${targetScope} with content filtering`);
+
+    // Get directories and adapters for source and target scopes
+    const sourceDir = this.scopeResolver.getScopeDirectory(sourceScope);
+    const targetDir = this.scopeResolver.getScopeDirectory(targetScope);
+
+    const sourceAdapter = this.storageFactories[storageBackend].create(sourceDir, sourceScope);
+    const targetAdapter = this.storageFactories[storageBackend].create(targetDir, targetScope);
+
+    const progress: MigrationProgress = {
+      phase: 'filtering_items',
+      itemsProcessed: 0,
+      totalItems: 0,
+      errors: [],
+      startTime: new Date()
+    };
+
+    try {
+      // Phase 1: Filter items based on content criteria
+      progress.phase = 'filtering_items';
+      onProgress?.(progress);
+
+      const sourceCatalog = sourceAdapter.readCatalog();
+      const filteredItemIds = await this.filterItemsByContent(
+        sourceAdapter,
+        Object.keys(sourceCatalog),
+        contentFilter
+      );
+
+      progress.totalItems = filteredItemIds.length;
+      console.log(`Filtered ${progress.totalItems} items matching criteria from ${Object.keys(sourceCatalog).length} total items`);
+
+      if (dryRun) {
+        console.log(`DRY RUN: Would migrate ${progress.totalItems} filtered items from ${sourceScope} to ${targetScope}`);
+        console.log('Filtered item IDs:', filteredItemIds.slice(0, 10), filteredItemIds.length > 10 ? `... and ${filteredItemIds.length - 10} more` : '');
+        return {
+          success: true,
+          sourceItems: progress.totalItems,
+          targetItems: progress.totalItems,
+          missingItems: [],
+          corruptedItems: [],
+          inconsistencies: []
+        };
+      }
+
+      // Phase 2: Migrate filtered items
+      progress.phase = 'migrating_items';
+      onProgress?.(progress);
+
+      for (const itemId of filteredItemIds) {
+        progress.currentItem = itemId;
+        onProgress?.(progress);
+
+        try {
+          const item = await sourceAdapter.readItem(itemId);
+          if (item) {
+            // Update scope in the item
+            const migratedItem: MemoryItem = {
+              ...item,
+              scope: targetScope,
+              updatedAt: new Date().toISOString()
+            };
+
+            await targetAdapter.writeItem(migratedItem);
+            progress.itemsProcessed++;
+          } else {
+            progress.errors.push({ id: itemId, error: 'Failed to read item from source scope' });
+          }
+        } catch (error) {
+          progress.errors.push({
+            id: itemId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      // Phase 3: Validation
+      let validationResult: MigrationValidationResult = {
+        success: progress.errors.length === 0,
+        sourceItems: progress.totalItems,
+        targetItems: progress.itemsProcessed,
+        missingItems: [],
+        corruptedItems: [],
+        inconsistencies: progress.errors.map(e => ({ id: e.id, issue: e.error }))
+      };
+
+      if (validateAfterMigration) {
+        progress.phase = 'validating';
+        onProgress?.(progress);
+
+        validationResult = await this.validateScopeMigration(
+          targetAdapter,
+          filteredItemIds,
+          targetScope
+        );
+      }
+
+      progress.phase = 'completed';
+      progress.estimatedCompletion = new Date();
+      onProgress?.(progress);
+
+      console.log(`Scope migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
+
+      return validationResult;
+
+    } catch (error) {
+      console.error('Scope migration failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Filter items based on content criteria using intelligent matching
+   */
+  private async filterItemsByContent(
+    adapter: StorageAdapter,
+    itemIds: string[],
+    filter?: ScopeMigrationOptions['contentFilter']
+  ): Promise<string[]> {
+    if (!filter) return itemIds;
+
+    const matchingIds: string[] = [];
+
+    for (const itemId of itemIds) {
+      try {
+        const item = await adapter.readItem(itemId);
+        if (!item) continue;
+
+        let matches = true;
+
+        // Type filter
+        if (filter.types && filter.types.length > 0) {
+          matches &&= filter.types.includes(item.type);
+        }
+
+        // Tags filter
+        if (filter.tags && filter.tags.length > 0) {
+          const itemTags = item.facets?.tags || [];
+          matches &&= filter.tags.some(tag => itemTags.includes(tag));
+        }
+
+        // Files filter
+        if (filter.files && filter.files.length > 0) {
+          const itemFiles = item.facets?.files || [];
+          matches &&= filter.files.some(file => itemFiles.includes(file));
+        }
+
+        // Query filter (searches in title, text, code)
+        if (filter.query) {
+          const searchText = [
+            item.title || '',
+            item.text || '',
+            item.code || ''
+          ].join(' ').toLowerCase();
+          matches &&= searchText.includes(filter.query.toLowerCase());
+        }
+
+        // Title patterns (regex support)
+        if (filter.titlePatterns && filter.titlePatterns.length > 0) {
+          const title = item.title || '';
+          matches &&= filter.titlePatterns.some(pattern => {
+            try {
+              return new RegExp(pattern, 'i').test(title);
+            } catch {
+              return title.toLowerCase().includes(pattern.toLowerCase());
+            }
+          });
+        }
+
+        // Content patterns (regex support)
+        if (filter.contentPatterns && filter.contentPatterns.length > 0) {
+          const content = [item.text || '', item.code || ''].join(' ');
+          matches &&= filter.contentPatterns.some(pattern => {
+            try {
+              return new RegExp(pattern, 'i').test(content);
+            } catch {
+              return content.toLowerCase().includes(pattern.toLowerCase());
+            }
+          });
+        }
+
+        // Date range filter
+        if (filter.dateRange) {
+          const itemDate = new Date(item.createdAt);
+          const startDate = new Date(filter.dateRange.start);
+          const endDate = new Date(filter.dateRange.end);
+          matches &&= itemDate >= startDate && itemDate <= endDate;
+        }
+
+        if (matches) {
+          matchingIds.push(itemId);
+        }
+      } catch (error) {
+        console.warn(`Error filtering item ${itemId}:`, error);
+      }
+    }
+
+    return matchingIds;
+  }
+
+  /**
+   * Create backup of source storage before migration
+   */
+  private async createBackup(
+    sourceAdapter: StorageAdapter,
+    scope: MemoryScope,
+    backend: StorageBackend
+  ): Promise<string> {
+    const backupDir = `${this.scopeResolver.getScopeDirectory(scope)}_backup_${Date.now()}_${backend}`;
+    const backupAdapter = this.storageFactories[backend].create(backupDir, scope);
+
+    const catalog = sourceAdapter.readCatalog();
+    const itemIds = Object.keys(catalog);
+
+    for (const itemId of itemIds) {
+      const item = await sourceAdapter.readItem(itemId);
+      if (item) {
+        await backupAdapter.writeItem(item);
+      }
+    }
+
+    const config = sourceAdapter.readConfig();
+    if (config) {
+      backupAdapter.writeConfig(config);
+    }
+
+    console.log(`Backup created at: ${backupDir}`);
+    return backupDir;
+  }
+
+  /**
+   * Atomically replace source directory with target directory
+   */
+  private async atomicReplace(sourceDir: string, targetDir: string): Promise<void> {
+    const tempDir = `${sourceDir}_old_${Date.now()}`;
+
+    // Move source to temp location
+    await this.moveDirectory(sourceDir, tempDir);
+
+    try {
+      // Move target to source location
+      await this.moveDirectory(targetDir, sourceDir);
+
+      // Remove old source
+      await this.removeDirectory(tempDir);
+    } catch (error) {
+      // Rollback on failure
+      await this.moveDirectory(tempDir, sourceDir).catch(console.error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate migration results
+   */
+  private async validateMigration(
+    sourceAdapter: StorageAdapter | null,
+    targetAdapter: StorageAdapter,
+    expectedItemIds: string[]
+  ): Promise<MigrationValidationResult> {
+    const result: MigrationValidationResult = {
+      success: true,
+      sourceItems: expectedItemIds.length,
+      targetItems: 0,
+      missingItems: [],
+      corruptedItems: [],
+      inconsistencies: []
+    };
+
+    try {
+      const targetCatalog = targetAdapter.readCatalog();
+      const targetItemIds = Object.keys(targetCatalog);
+      result.targetItems = targetItemIds.length;
+
+      // Check for missing items
+      for (const expectedId of expectedItemIds) {
+        if (!targetItemIds.includes(expectedId)) {
+          result.missingItems.push(expectedId);
+        }
+      }
+
+      // Validate item integrity
+      for (const itemId of targetItemIds) {
+        try {
+          const item = await targetAdapter.readItem(itemId);
+          if (!item) {
+            result.corruptedItems.push(itemId);
+          }
+        } catch (error) {
+          result.corruptedItems.push(itemId);
+          result.inconsistencies.push({
+            id: itemId,
+            issue: `Failed to read: ${error instanceof Error ? error.message : String(error)}`
+          });
+        }
+      }
+
+      result.success = result.missingItems.length === 0 && result.corruptedItems.length === 0;
+
+    } catch (error) {
+      result.success = false;
+      result.inconsistencies.push({
+        id: 'validation',
+        issue: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Validate scope migration specifically
+   */
+  private async validateScopeMigration(
+    targetAdapter: StorageAdapter,
+    expectedItemIds: string[],
+    expectedScope: MemoryScope
+  ): Promise<MigrationValidationResult> {
+    const result = await this.validateMigration(null, targetAdapter, expectedItemIds);
+
+    // Additional validation: check that all items have correct scope
+    for (const itemId of expectedItemIds) {
+      try {
+        const item = await targetAdapter.readItem(itemId);
+        if (item && item.scope !== expectedScope) {
+          result.inconsistencies.push({
+            id: itemId,
+            issue: `Scope mismatch: expected ${expectedScope}, got ${item.scope}`
+          });
+        }
+      } catch (error) {
+        result.inconsistencies.push({
+          id: itemId,
+          issue: `Scope validation failed: ${error instanceof Error ? error.message : String(error)}`
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Utility methods for directory operations
+   */
+  private async moveDirectory(source: string, target: string): Promise<void> {
+    const fs = await import('fs-extra');
+    await fs.move(source, target);
+  }
+
+  private async removeDirectory(dir: string): Promise<void> {
+    const fs = await import('fs-extra');
+    await fs.remove(dir);
+  }
+
+  /**
+   * Get migration statistics and status
+   */
+  async getMigrationStatus(scope: MemoryScope, backend: StorageBackend): Promise<{
+    itemCount: number;
+    storageSize: number;
+    lastMigration?: Date;
+    backend: StorageBackend;
+  }> {
+    const dir = this.scopeResolver.getScopeDirectory(scope);
+    const adapter = this.storageFactories[backend].create(dir, scope);
+
+    const stats = await adapter.getStats();
+    const catalog = adapter.readCatalog();
+
+    return {
+      itemCount: Object.keys(catalog).length,
+      storageSize: stats.sizeBytes,
+      backend,
+      // lastMigration could be stored in metadata
+    };
+  }
+}
