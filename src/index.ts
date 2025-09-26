@@ -12,9 +12,22 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { MemoryManager } from './MemoryManager.js';
-import { MigrationManager } from './migration/MigrationManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
-import type { StorageBackend, StorageMigrationOptions, ScopeMigrationOptions } from './migration/MigrationManager.js';
+
+// Import MigrationManager conditionally to avoid FFmpeg dependency issues
+let MigrationManagerClass: any = null;
+async function loadMigrationManager() {
+  if (MigrationManagerClass === null) {
+    try {
+      const migrationModule = await import('./migration/MigrationManager.js');
+      MigrationManagerClass = migrationModule.MigrationManager;
+    } catch (error) {
+      console.warn('Migration tools not available - FFmpeg dependency issues:', (error as Error).message);
+      MigrationManagerClass = false; // Mark as failed
+    }
+  }
+  return MigrationManagerClass || null;
+}
 
 function log(message: string, ...args: any[]) {
   console.error(`[LLM-Memory] ${new Date().toISOString()} ${message}`, ...args);
@@ -23,7 +36,7 @@ function log(message: string, ...args: any[]) {
 class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
-  private migration: MigrationManager;
+  private migration: any;
 
   constructor() {
     this.server = new Server(
@@ -35,9 +48,13 @@ class LLMKnowledgeBaseServer {
 
     log('Initializing LLM Memory MCP server');
     this.memory = new MemoryManager();
-    this.migration = new MigrationManager();
+    this.migration = null; // Will be initialized on first use if available
     this.setupServerEventLogging();
     this.setupHandlers();
+
+    // Check video capabilities in background (don't block startup)
+    this.checkVideoCapabilities();
+
     log('Server initialization complete');
   }
 
@@ -60,6 +77,68 @@ class LLMKnowledgeBaseServer {
     this.server.onerror = (error: Error) => {
       log(`🚨 MCP server error: ${error.message}`);
     };
+  }
+
+  private async checkVideoCapabilities(): Promise<void> {
+    try {
+      log('🎬 Checking video storage capabilities...');
+
+      // Check native FFmpeg
+      let hasNativeFFmpeg = false;
+      try {
+        const { hasNativeFFmpeg: nativeCheck } = await import('./video/utils.js');
+        hasNativeFFmpeg = await nativeCheck();
+      } catch (nativeError) {
+        log('   Native FFmpeg check failed:', (nativeError as Error).message);
+      }
+
+      // Check WASM FFmpeg components
+      let hasWasmFFmpeg = false;
+      try {
+        const wasmModule = await import('./video/WasmEncoder.js');
+        hasWasmFFmpeg = await wasmModule.isWasmEncoderSupported();
+      } catch (wasmError) {
+        log('   WASM FFmpeg check failed:', (wasmError as Error).message);
+      }
+
+      // Check video utils loading
+      let videoUtilsLoaded = false;
+      try {
+        const utilsModule = await import('./video/utils.js');
+        videoUtilsLoaded = !!utilsModule.createOptimalEncoder;
+      } catch (utilsError) {
+        log('   Video utils loading failed:', (utilsError as Error).message);
+      }
+
+      // Report capabilities
+      if (hasNativeFFmpeg || hasWasmFFmpeg) {
+        log('✅ Video storage available:');
+        if (hasNativeFFmpeg) log('   - Native FFmpeg: ✅');
+        if (hasWasmFFmpeg) log('   - WASM FFmpeg: ✅');
+        log('   🎯 Video migration tools are ready to use');
+      } else {
+        log('⚠️  Video storage not available:');
+        log('   - Native FFmpeg: ❌');
+        log('   - WASM FFmpeg: ❌');
+        log('   - Video utils loaded: ' + (videoUtilsLoaded ? '✅' : '❌'));
+        log('   📋 Video migration will use fallback mode');
+        log('   💡 Install FFmpeg to enable full video storage capabilities');
+      }
+    } catch (error) {
+      log('⚠️  Could not check video capabilities:', (error as Error).message);
+      log('   📋 Video migration will use fallback mode if available');
+    }
+  }
+
+  private async initializeMigrationManager(): Promise<any> {
+    if (this.migration === null) {
+      const MigrationManagerClass = await loadMigrationManager();
+      if (MigrationManagerClass) {
+        this.migration = new MigrationManagerClass();
+        console.log('[LLM-Memory] Migration tools initialized - file-based operations only (video backend disabled)');
+      }
+    }
+    return this.migration;
   }
 
   private setupHandlers(): void {
@@ -849,8 +928,15 @@ class LLMKnowledgeBaseServer {
           }
 
           case 'migration.storage_backend': {
-            const sourceBackend = args.sourceBackend as StorageBackend;
-            const targetBackend = args.targetBackend as StorageBackend;
+            const mgr = await this.initializeMigrationManager();
+            if (!mgr) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
+              );
+            }
+            const sourceBackend = args.sourceBackend as 'file' | 'video';
+            const targetBackend = args.targetBackend as 'file' | 'video';
             const scope = args.scope as MemoryScope;
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
@@ -859,21 +945,21 @@ class LLMKnowledgeBaseServer {
             log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope${dryRun ? ' (DRY RUN)' : ''}`);
 
             const progressLog: string[] = [];
-            const options: StorageMigrationOptions = {
+            const options: any = {
               sourceBackend,
               targetBackend,
               scope,
               dryRun,
               validateAfterMigration,
               backupBeforeMigration,
-              onProgress: (progress) => {
+              onProgress: (progress: any) => {
                 const msg = `[${progress.phase}] ${progress.itemsProcessed}/${progress.totalItems} items${progress.currentItem ? ` (${progress.currentItem})` : ''} - ${progress.errors.length} errors`;
                 progressLog.push(msg);
                 log(`Migration progress: ${msg}`);
               }
             };
 
-            const result = await this.migration.migrateStorageBackend(options);
+            const result = await mgr.migrateStorageBackend(options);
 
             const summary = {
               migration: 'storage_backend',
@@ -890,10 +976,17 @@ class LLMKnowledgeBaseServer {
           }
 
           case 'migration.scope': {
+            const mgr = await this.initializeMigrationManager();
+            if (!mgr) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
+              );
+            }
             const sourceScope = args.sourceScope as MemoryScope;
             const targetScope = args.targetScope as MemoryScope;
-            const contentFilter = args.contentFilter as ScopeMigrationOptions['contentFilter'];
-            const storageBackend = (args.storageBackend as StorageBackend) || 'file';
+            const contentFilter = args.contentFilter as any;
+            const storageBackend = (args.storageBackend as 'file' | 'video') || 'file';
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
 
@@ -912,21 +1005,21 @@ class LLMKnowledgeBaseServer {
             }
 
             const progressLog: string[] = [];
-            const options: ScopeMigrationOptions = {
+            const options: any = {
               sourceScope,
               targetScope,
               contentFilter,
               storageBackend,
               dryRun,
               validateAfterMigration,
-              onProgress: (progress) => {
+              onProgress: (progress: any) => {
                 const msg = `[${progress.phase}] ${progress.itemsProcessed}/${progress.totalItems} items${progress.currentItem ? ` (${progress.currentItem})` : ''} - ${progress.errors.length} errors`;
                 progressLog.push(msg);
                 log(`Migration progress: ${msg}`);
               }
             };
 
-            const result = await this.migration.migrateBetweenScopes(options);
+            const result = await mgr.migrateBetweenScopes(options);
 
             const summary = {
               migration: 'scope',
@@ -944,26 +1037,40 @@ class LLMKnowledgeBaseServer {
           }
 
           case 'migration.status': {
+            const mgr = await this.initializeMigrationManager();
+            if (!mgr) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
+              );
+            }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as StorageBackend;
+            const backend = args.backend as 'file' | 'video';
 
             log(`Getting migration status: scope=${scope}, backend=${backend}`);
 
-            const status = await this.migration.getMigrationStatus(scope, backend);
+            const status = await mgr.getMigrationStatus(scope, backend);
 
             log(`Migration status retrieved: ${status.itemCount} items, ${(status.storageSize / 1024).toFixed(1)}KB`);
             return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
           }
 
           case 'migration.validate': {
+            const mgr = await this.initializeMigrationManager();
+            if (!mgr) {
+              throw new McpError(
+                ErrorCode.InvalidRequest,
+                'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
+              );
+            }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as StorageBackend;
+            const backend = args.backend as 'file' | 'video';
             const expectedItems = args.expectedItems as string[] || [];
 
             log(`Validating migration: scope=${scope}, backend=${backend}${expectedItems.length > 0 ? `, checking ${expectedItems.length} items` : ''}`);
 
             // Use a simple validation by getting the current status
-            const status = await this.migration.getMigrationStatus(scope, backend);
+            const status = await mgr.getMigrationStatus(scope, backend);
 
             // Create a basic validation result
             const validation = {

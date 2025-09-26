@@ -1,9 +1,24 @@
 import type { MemoryItem, MemoryScope, MemoryType } from '../types/Memory.js';
 import type { StorageAdapter, StorageAdapterFactory } from '../storage/StorageAdapter.js';
 import { FileStorageAdapterFactory } from '../storage/FileStorageAdapter.js';
-import { VideoStorageAdapterFactory } from '../storage/VideoStorageAdapter.js';
 import { ScopeResolver } from '../scope/ScopeResolver.js';
 import { ulid } from '../util/ulid.js';
+
+// Dynamic import for video storage to avoid startup dependencies
+let VideoStorageAdapterFactory: any = null;
+async function loadVideoStorageAdapterFactory() {
+  if (!VideoStorageAdapterFactory) {
+    try {
+      const videoModule = await import('../storage/VideoStorageAdapter.js');
+      VideoStorageAdapterFactory = videoModule.VideoStorageAdapterFactory;
+      return VideoStorageAdapterFactory;
+    } catch (error) {
+      console.warn('Video storage adapter not available:', (error as Error).message);
+      return null;
+    }
+  }
+  return VideoStorageAdapterFactory;
+}
 
 export type StorageBackend = 'file' | 'video';
 
@@ -60,10 +75,27 @@ export interface MigrationValidationResult {
  */
 export class MigrationManager {
   private scopeResolver = new ScopeResolver();
-  private storageFactories: Record<StorageBackend, StorageAdapterFactory> = {
-    file: new FileStorageAdapterFactory(),
-    video: new VideoStorageAdapterFactory()
-  };
+  // Cache for optional video factory to avoid repeated import attempts
+  private cachedVideoFactory: StorageAdapterFactory | null | undefined = undefined;
+
+  /**
+   * Resolve a storage factory for the requested backend.
+   */
+  private async getFactory(backend: StorageBackend): Promise<StorageAdapterFactory | null> {
+    if (backend === 'file') {
+      return new FileStorageAdapterFactory();
+    }
+
+    if (backend === 'video') {
+      const VideoFactory = await loadVideoStorageAdapterFactory();
+      if (!VideoFactory) {
+        throw new Error('Video storage backend is not available. FFmpeg dependencies may not be installed or failed to load.');
+      }
+      return new VideoFactory();
+    }
+
+    throw new Error(`Unknown storage backend: ${backend}`);
+  }
 
   /**
    * Migrate storage backend (file ↔ video) within the same scope
@@ -86,8 +118,18 @@ export class MigrationManager {
     const targetDir = `${sourceDir}_migration_${Date.now()}`;
 
     // Initialize storage adapters
-    const sourceAdapter = this.storageFactories[sourceBackend].create(sourceDir, scope);
-    const targetAdapter = this.storageFactories[targetBackend].create(targetDir, scope);
+    const sourceFactory = await this.getFactory(sourceBackend);
+    const targetFactory = await this.getFactory(targetBackend);
+
+    if (!sourceFactory) {
+      throw new Error(`${sourceBackend} storage backend is not available (missing dependencies)`);
+    }
+    if (!targetFactory) {
+      throw new Error(`${targetBackend} storage backend is not available (missing dependencies)`);
+    }
+
+    const sourceAdapter = sourceFactory.create(sourceDir, scope);
+    const targetAdapter = targetFactory.create(targetDir, scope);
 
     const progress: MigrationProgress = {
       phase: 'initialization',
@@ -173,7 +215,11 @@ export class MigrationManager {
         progress.phase = 'validating';
         onProgress?.(progress);
 
-        const finalAdapter = this.storageFactories[targetBackend].create(sourceDir, scope);
+        const finalFactory = await this.getFactory(targetBackend);
+        const finalAdapter = finalFactory?.create(sourceDir, scope);
+        if (!finalAdapter) {
+          throw new Error(`${targetBackend} storage adapter not available for validation`);
+        }
         validationResult = await this.validateMigration(
           null, // Source no longer available after replacement
           finalAdapter,
@@ -215,8 +261,13 @@ export class MigrationManager {
     const sourceDir = this.scopeResolver.getScopeDirectory(sourceScope);
     const targetDir = this.scopeResolver.getScopeDirectory(targetScope);
 
-    const sourceAdapter = this.storageFactories[storageBackend].create(sourceDir, sourceScope);
-    const targetAdapter = this.storageFactories[storageBackend].create(targetDir, targetScope);
+    const factory = await this.getFactory(storageBackend);
+    if (!factory) {
+      throw new Error(`${storageBackend} storage backend is not available (missing dependencies)`);
+    }
+
+    const sourceAdapter = factory.create(sourceDir, sourceScope);
+    const targetAdapter = factory.create(targetDir, targetScope);
 
     const progress: MigrationProgress = {
       phase: 'filtering_items',
@@ -418,7 +469,11 @@ export class MigrationManager {
     backend: StorageBackend
   ): Promise<string> {
     const backupDir = `${this.scopeResolver.getScopeDirectory(scope)}_backup_${Date.now()}_${backend}`;
-    const backupAdapter = this.storageFactories[backend].create(backupDir, scope);
+    const backupFactory = await this.getFactory(backend);
+    const backupAdapter = backupFactory?.create(backupDir, scope);
+    if (!backupAdapter) {
+      throw new Error(`${backend} storage adapter not available for backup`);
+    }
 
     const catalog = sourceAdapter.readCatalog();
     const itemIds = Object.keys(catalog);
@@ -573,7 +628,13 @@ export class MigrationManager {
     backend: StorageBackend;
   }> {
     const dir = this.scopeResolver.getScopeDirectory(scope);
-    const adapter = this.storageFactories[backend].create(dir, scope);
+    const factory = await this.getFactory(backend);
+
+    if (!factory) {
+      throw new Error(`${backend} storage backend is not available (missing dependencies)`);
+    }
+
+    const adapter = factory.create(dir, scope);
 
     const stats = await adapter.getStats();
     const catalog = adapter.readCatalog();

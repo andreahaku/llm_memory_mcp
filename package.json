@@ -40,7 +40,7 @@
   "license": "MIT",
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.10",
-    "@ffmpeg/util": "^0.12.1",
+    "@ffmpeg/util": "^0.12.2",
     "@modelcontextprotocol/sdk": "^0.4.0",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
