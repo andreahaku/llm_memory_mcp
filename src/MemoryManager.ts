@@ -1178,7 +1178,10 @@ export class MemoryManager {
         this.snapshotIntervals[scope] = setInterval(() => {
           const ts = new Date().toISOString();
           const checksum = this.computeScopeChecksum(scope);
-          this.getStore(scope).writeSnapshotMeta({ lastTs: ts, checksum });
+          const store = this.getStore(scope);
+          if (store?.writeSnapshotMeta) {
+            store.writeSnapshotMeta({ lastTs: ts, checksum });
+          }
         }, snapMs);
       }
     } catch {}
@@ -1239,7 +1242,7 @@ export class MemoryManager {
     const allowed = cfg?.sharing?.sensitivity || 'team';
     log(`Sync merge: allowed sensitivity level is ${allowed}`);
     const rank = (s: string) => (s === 'public' ? 0 : s === 'team' ? 1 : 2);
-    const list = ids && ids.length ? ids : await localStore.listItems();
+    const list = ids && ids.length ? ids : (localStore.listItems ? await localStore.listItems() : []);
     for (const id of list) {
       const item = await localStore.readItem(id);
       if (!item) continue;

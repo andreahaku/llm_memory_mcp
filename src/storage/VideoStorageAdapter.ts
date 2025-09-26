@@ -1,11 +1,20 @@
 import type { StorageAdapter, WriteResult, GetResult, StorageStats, PayloadRef } from './StorageAdapter.js';
 import type { MemoryItem, MemoryItemSummary, MemoryConfig, MemoryScope } from '../types/Memory.js';
+
+/**
+ * Extended summary interface for video storage with payload reference
+ */
+interface VideoMemoryItemSummary extends MemoryItemSummary {
+  payloadRef?: PayloadRef;
+  contentHash?: string;
+}
 import { QRManager } from '../qr/QRManager.js';
 import { QRDecoder } from '../qr/QRDecoder.js';
-import { VideoEncoder } from '../video/VideoEncoder.js';
+import type { VideoEncoder } from '../video/VideoEncoder.js';
+import { createOptimalEncoder } from '../video/utils.js';
 import { VideoSegmentManager } from '../video/VideoSegmentManager.js';
 import { EnhancedFrameIndex, FrameIndexManager } from '../video/EnhancedFrameIndex.js';
-import { FrameIndexCreator } from '../video/FrameIndex.js';
+import { MviWriter } from '../video/FrameIndex.js';
 import { LRU } from '../utils/lru.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -24,13 +33,13 @@ export class VideoStorageAdapter implements StorageAdapter {
   // Phase 0 components integration
   private qrManager = new QRManager();
   private qrDecoder = new QRDecoder();
-  private videoEncoder: VideoEncoder;
+  private videoEncoder: VideoEncoder | null = null;
   private segmentManager: VideoSegmentManager;
   private frameIndexManager: FrameIndexManager;
-  private frameIndexCreator = new FrameIndexCreator();
+  private mviWriter: MviWriter | null = null;
 
   // In-memory catalog for fast access
-  private catalog: Record<string, MemoryItemSummary> = {};
+  private catalog: Record<string, VideoMemoryItemSummary> = {};
 
   // Payload cache for decoded content (1GB default)
   private payloadCache = new LRU<string, Buffer>(1024);
@@ -144,9 +153,13 @@ export class VideoStorageAdapter implements StorageAdapter {
         type: item.type,
         scope: item.scope,
         title: item.title,
-        tags: item.tags || [],
-        isPinned: item.isPinned,
-        metadata: item.metadata,
+        tags: item.facets?.tags || [],
+        files: item.facets?.files || [],
+        symbols: item.facets?.symbols || [],
+        confidence: item.quality?.confidence || 0.5,
+        pinned: item.quality?.pinned || false,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
         payloadRef,
         contentHash
       };
@@ -160,9 +173,13 @@ export class VideoStorageAdapter implements StorageAdapter {
         type: item.type,
         scope: item.scope,
         title: item.title,
-        tags: item.tags || [],
-        isPinned: item.isPinned,
-        metadata: item.metadata,
+        tags: item.facets?.tags || [],
+        files: item.facets?.files || [],
+        symbols: item.facets?.symbols || [],
+        confidence: item.quality?.confidence || 0.5,
+        pinned: item.quality?.pinned || false,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
         contentHash
       };
 
@@ -196,11 +213,15 @@ export class VideoStorageAdapter implements StorageAdapter {
       type: summary.type,
       scope: summary.scope,
       title: summary.title,
-      tags: summary.tags,
-      isPinned: summary.isPinned,
-      metadata: summary.metadata,
       text: itemData.text,
       code: itemData.code,
+      facets: { tags: summary.tags, files: summary.files, symbols: summary.symbols },
+      quality: { confidence: summary.confidence, pinned: summary.pinned, reuseCount: 0 },
+      security: { sensitivity: 'private' },
+      context: {},
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt,
+      version: 1,
       links: itemData.links
     };
   }
@@ -232,11 +253,32 @@ export class VideoStorageAdapter implements StorageAdapter {
 
   // Catalog operations
   readCatalog(): Record<string, MemoryItemSummary> {
-    return { ...this.catalog };
+    // Convert to base interface for external usage
+    const result: Record<string, MemoryItemSummary> = {};
+    for (const [id, summary] of Object.entries(this.catalog)) {
+      result[id] = {
+        id: summary.id,
+        type: summary.type,
+        scope: summary.scope,
+        title: summary.title,
+        tags: summary.tags,
+        files: summary.files,
+        symbols: summary.symbols,
+        confidence: summary.confidence,
+        pinned: summary.pinned,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt
+      };
+    }
+    return result;
   }
 
   setCatalog(catalog: Record<string, MemoryItemSummary>): void {
-    this.catalog = catalog;
+    // Convert to extended interface for internal usage
+    this.catalog = {};
+    for (const [id, summary] of Object.entries(catalog)) {
+      this.catalog[id] = { ...summary } as VideoMemoryItemSummary;
+    }
     this.saveCatalog();
   }
 
@@ -339,14 +381,14 @@ export class VideoStorageAdapter implements StorageAdapter {
   // Initialize video encoder with fallback strategy
   private async initializeEncoder(): Promise<void> {
     try {
-      this.videoEncoder = new VideoEncoder();
+      this.videoEncoder = await createOptimalEncoder();
       await this.videoEncoder.initialize();
 
       // Update segment manager with initialized encoder
       this.segmentManager = new VideoSegmentManager(this.directory, this.videoEncoder);
 
       this.encoderInitialized = true;
-      console.log('Video encoder initialized successfully:', this.videoEncoder.getCurrentEncoder().name);
+      console.log('Video encoder initialized successfully');
     } catch (error) {
       console.error('Failed to initialize video encoder:', error);
       this.encoderInitialized = false;

@@ -53,5 +53,9 @@ export class LRU<K, V> {
   clear(): void {
     this.map.clear();
   }
+
+  [Symbol.iterator](): IterableIterator<[K, V]> {
+    return this.map[Symbol.iterator]();
+  }
 }
 

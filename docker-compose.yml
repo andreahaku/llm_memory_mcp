@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  llm-memory-mcp:
+    build: .
+    image: llm-memory-mcp:latest
+    container_name: llm-memory-mcp
+    restart: unless-stopped
+
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - CONFIG_PATH=/app/config/production.json
+      - MEMORY_SCOPE=global
+
+    volumes:
+      # Persistent storage for memory data
+      - llm-memory-data:/app/data
+      - llm-memory-videos:/app/videos
+      - llm-memory-logs:/var/log/llm-memory-mcp
+      # Temporary encoding workspace
+      - llm-memory-temp:/tmp/llm-memory-encoding
+      # Configuration override (optional)
+      - ./config:/app/config:ro
+
+    ports:
+      # Health check endpoint
+      - "8080:8080"
+      # Metrics endpoint (Prometheus)
+      - "9090:9090"
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Security context
+    user: nodejs
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+    # Temporary filesystems for security
+    tmpfs:
+      - /tmp:noexec,nosuid,size=1g
+      - /var/tmp:noexec,nosuid,size=100m
+
+  # Optional: Prometheus monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: llm-memory-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - llm-memory-mcp
+
+  # Optional: Grafana dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: llm-memory-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+
+  # Optional: Log aggregation
+  fluentd:
+    image: fluent/fluentd:edge-debian
+    container_name: llm-memory-fluentd
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/fluentd/fluent.conf:/fluentd/etc/fluent.conf:ro
+      - llm-memory-logs:/var/log/llm-memory-mcp:ro
+      - fluentd-data:/fluentd/log
+    depends_on:
+      - llm-memory-mcp
+
+# Named volumes for persistent data
+volumes:
+  llm-memory-data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/data/production
+      o: bind
+
+  llm-memory-videos:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/data/videos
+      o: bind
+
+  llm-memory-logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/logs
+      o: bind
+
+  llm-memory-temp:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=2g,uid=1001,gid=1001
+
+  prometheus-data:
+  grafana-data:
+  fluentd-data:
+
+# Network configuration
+networks:
+  default:
+    name: llm-memory-network
+    driver: bridge
