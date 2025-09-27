@@ -1,8 +1,12 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, renameSync } from 'fs';
-import { readdir, writeFile, rename, appendFile } from 'fs/promises';
+import { readdir, writeFile, rename } from 'fs/promises';
 import * as path from 'path';
 import type { MemoryItem, MemoryItemSummary, JournalEntry, OptimizedJournalEntry, MemoryConfig } from '../types/Memory.js';
 import { createHash } from 'node:crypto';
+
+function log(message: string, ...args: any[]) {
+  console.error(`[FileStore] ${new Date().toISOString()} ${message}`, ...args);
+}
 
 interface FileLock {
   path: string;
@@ -15,7 +19,7 @@ export class FileStore {
   // Debounced catalog update state
   private pendingUpserts: Map<string, MemoryItemSummary> = new Map();
   private pendingDeletes: Set<string> = new Set();
-  private flushTimer: NodeJS.Timeout | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private compactionHook?: () => void;
   private compactThreshold = 500;
   private hashCache = new Map<string, string>(); // Cache item hashes
@@ -542,7 +546,7 @@ export class FileStore {
     const errors: string[] = [];
     let migrated = 0;
 
-    console.log(`Starting migration of ${legacyEntries.length} legacy journal entries...`);
+    log(`Starting migration of ${legacyEntries.length} legacy journal entries...`);
 
     for (const entry of legacyEntries) {
       try {
@@ -618,8 +622,8 @@ export class FileStore {
     // Replace with optimized version
     this.replaceOptimizedJournal(optimizedEntries);
 
-    console.log(`Migration completed: ${migrated} entries migrated, ${errors.length} errors`);
-    console.log(`Size reduction: ${beforeSize} → ${afterSize} bytes (${sizeReduction.percentage.toFixed(1)}% smaller)`);
+    log(`Migration completed: ${migrated} entries migrated, ${errors.length} errors`);
+    log(`Size reduction: ${beforeSize} → ${afterSize} bytes (${sizeReduction.percentage.toFixed(1)}% smaller)`);
 
     return { migrated, errors, sizeReduction };
   }
@@ -634,7 +638,7 @@ export class FileStore {
     if (existsSync(journalPath)) {
       try {
         renameSync(journalPath, backupPath);
-        console.log(`Legacy journal backed up to: ${backupPath}`);
+        log(`Legacy journal backed up to: ${backupPath}`);
       } catch (error) {
         console.error('Failed to backup legacy journal:', error);
       }
@@ -659,14 +663,14 @@ export class FileStore {
         const stats = await this.getJournalStats();
 
         if (stats.migrationNeeded) {
-          console.log(`🔄 Detected legacy journal in ${this.directory}, starting automatic migration...`);
+          log(`🔄 Detected legacy journal in ${this.directory}, starting automatic migration...`);
 
           const result = await this.migrateToOptimizedJournal();
 
-          console.log(`✅ Auto-migration completed successfully:`);
-          console.log(`   • Migrated ${result.migrated} entries`);
-          console.log(`   • Size reduction: ${result.sizeReduction.before} → ${result.sizeReduction.after} bytes (${result.sizeReduction.percentage.toFixed(1)}% smaller)`);
-          console.log(`   • Errors: ${result.errors.length}`);
+          log(`✅ Auto-migration completed successfully:`);
+          log(`   • Migrated ${result.migrated} entries`);
+          log(`   • Size reduction: ${result.sizeReduction.before} → ${result.sizeReduction.after} bytes (${result.sizeReduction.percentage.toFixed(1)}% smaller)`);
+          log(`   • Errors: ${result.errors.length}`);
 
           if (result.errors.length > 0) {
             console.warn(`⚠️  Migration had ${result.errors.length} errors:`, result.errors.slice(0, 3));

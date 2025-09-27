@@ -1,0 +1,8 @@
+{
+  "defaultStorageBackend": "file",
+  "defaultScope": "local",
+  "progressUpdateInterval": 1000,
+  "validateByDefault": true,
+  "backupByDefault": true,
+  "outputFormat": "text"
+}

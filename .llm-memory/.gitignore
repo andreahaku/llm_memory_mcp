@@ -1,0 +1,11 @@
+# Exclude temporary and lock files
+tmp/
+locks/
+*.lock
+
+# Include core memory data
+!journal.ndjson
+!catalog.json
+!items/
+!index/
+!config.json

@@ -5,7 +5,7 @@ const patterns: RegExp[] = [
   /(?:xox[baprs]-[A-Za-z0-9-]+)/g, // slack tokens
   /AIza[0-9A-Za-z\-_]{35}/g, // Google API keys
   /ghp_[0-9A-Za-z]{36}/g, // GitHub PAT
-  /AWS(?:SECRET|ACCESS)[A-Z_]*?=[A-Za-z0-9\/+]{20,}/gi,
+  /AWS(?:SECRET|ACCESS)[A-Z_]*?=[A-Za-z0-9/+]{20,}/gi,
 ];
 
 function hash(s: string) {

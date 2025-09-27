@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import { ulid } from './util/ulid.js';
 import { ScopeResolver } from './scope/ScopeResolver.js';
 import { FileStore } from './storage/fileStore.js';
+import type { StorageAdapter, StorageAdapterFactory } from './storage/StorageAdapter.js';
+import { FileStorageAdapterFactory } from './storage/FileStorageAdapter.js';
 import { InvertedIndexer } from './storage/Indexer.js';
 import { VectorIndex } from './storage/VectorIndex.js';
 import { redactSecrets } from './utils/secretFilter.js';
@@ -29,9 +31,11 @@ type PartialBy<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 export class MemoryManager {
   private resolver = new ScopeResolver();
+  private storageAdapterFactory: StorageAdapterFactory = new FileStorageAdapterFactory();
+  private defaultBackendPreference: 'file' | 'video' | null = null;
 
   // Lazily created per-scope stores
-  private stores: Partial<Record<MemoryScope, FileStore>> = {};
+  private stores: Partial<Record<MemoryScope, StorageAdapter>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
   private vectorIdx: Partial<Record<MemoryScope, VectorIndex>> = {};
   private queryCache = new LRU<string, MemorySearchResult>(100);
@@ -227,20 +231,145 @@ export class MemoryManager {
     this.computeConfidence(item, now);
   }
 
-  private getStore(scope: MemoryScope, cwd?: string): FileStore {
+  /**
+   * Force re-initialization of a scope's storage adapter (for post-migration scenarios)
+   */
+  public refreshStorageAdapter(scope: MemoryScope): void {
+    log(`Refreshing storage adapter for ${scope} scope`);
+    delete this.stores[scope];
+  }
+
+  /**
+   * Set the default backend preference for new scopes
+   */
+  setDefaultBackend(backend: 'file' | 'video' | null): void {
+    this.defaultBackendPreference = backend;
+    log(`Default storage backend preference set to: ${backend}`);
+  }
+
+  /**
+   * Get the global default backend preference
+   */
+  private getGlobalDefaultBackend(): 'file' | 'video' | null {
+    if (this.defaultBackendPreference !== null) {
+      return this.defaultBackendPreference;
+    }
+
+    // Auto-detect based on FFmpeg availability
+    return this.detectOptimalDefaultBackend();
+  }
+
+  /**
+   * Detect the optimal default backend based on system capabilities
+   */
+  private detectOptimalDefaultBackend(): 'file' | 'video' {
+    try {
+      // Check if FFmpeg is available and working
+      const { execSync } = require('child_process');
+      execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
+      log('FFmpeg detected - defaulting to video storage backend');
+      return 'video';
+    } catch (error) {
+      log('FFmpeg not available - defaulting to file storage backend');
+      return 'file';
+    }
+  }
+
+  private detectStorageBackend(dir: string): 'file' | 'video' {
+    try {
+      const configPath = path.join(dir, 'config.json');
+      if (fs.existsSync(configPath)) {
+        try {
+          const configRaw = fs.readFileSync(configPath, 'utf8');
+          const config = JSON.parse(configRaw);
+          const backend = config?.storage?.backend;
+          if (backend === 'video' || backend === 'file') {
+            return backend;
+          }
+        } catch (error) {
+          log(`Failed to read storage backend from config at ${configPath}:`, error);
+        }
+      }
+
+      // Check for video storage indicators
+      const segmentsDir = path.join(dir, 'segments');
+      if (fs.existsSync(segmentsDir)) {
+        const files = fs.readdirSync(segmentsDir);
+        // Look for .mp4 or .mvi files
+        if (files.some(f => f.endsWith('.mp4') || f.endsWith('.mvi'))) {
+          return 'video';
+        }
+      }
+
+      // Check for a default backend preference from environment or global config
+      const defaultBackend = process.env.LLM_MEMORY_DEFAULT_BACKEND || this.getGlobalDefaultBackend();
+      if (defaultBackend === 'video' || defaultBackend === 'file') {
+        log(`Using default storage backend preference: ${defaultBackend}`);
+        return defaultBackend;
+      }
+
+      return 'file';
+    } catch (error) {
+      log(`Error detecting storage backend for ${dir}:`, error);
+      return 'file'; // Default fallback
+    }
+  }
+
+  private getStore(scope: MemoryScope, cwd?: string): StorageAdapter {
     if (!this.stores[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
       log(`Initializing ${scope} store at: ${dir}`);
-      const store = new FileStore(dir);
+
+      // Auto-detect storage backend based on directory contents
+      const storageBackend = this.detectStorageBackend(dir);
+      log(`Detected storage backend for ${scope}: ${storageBackend}`);
+
+      let store: StorageAdapter;
+      if (storageBackend === 'video') {
+        // Import VideoStorageAdapterFactory dynamically
+        const { VideoStorageAdapterFactory } = require('./storage/VideoStorageAdapter.js');
+        const videoFactory = new VideoStorageAdapterFactory();
+        store = videoFactory.create(dir, scope);
+      } else {
+        store = this.storageAdapterFactory.create(dir, scope);
+      }
+
       this.stores[scope] = store; // set early to avoid recursion
+
+      // Set up search index integration for video storage
+      if (storageBackend === 'video' && 'registerIndexUpdateCallback' in store) {
+        log(`Setting up video storage search index integration for ${scope} scope`);
+        const videoStore = store as any;
+        videoStore.registerIndexUpdateCallback((items: MemoryItem[], deletedIds: string[]) => {
+          log(`Video storage index update callback: ${items.length} items, ${deletedIds.length} deletions`);
+          const indexer = this.getIndexer(scope, cwd);
+          const weights = this.getRanking(scope).fieldWeights as any;
+
+          // Update search index for modified items
+          for (const item of items) {
+            log(`Updating search index for item ${item.id}`);
+            indexer.updateItem(item, weights);
+          }
+
+          // Remove deleted items from search index
+          for (const id of deletedIds) {
+            log(`Removing item ${id} from search index`);
+            indexer.removeItem(id);
+            try { this.getVectorIndex(scope, cwd).remove(id); } catch {}
+          }
+        });
+      }
+
       // Set compaction hook based on scope config (read directly from store)
       const cfg = store.readConfig() || undefined;
       const thr = cfg?.maintenance?.compactEvery || 500;
-      store.setCompactionHook(() => {
-        // Compact by replaying and truncating journal for this scope
-        this.replayJournal(scope, cwd, true).catch(() => {});
-        this.queryCache.clear();
-      }, thr);
+      if (store.setCompactionHook) {
+        store.setCompactionHook(() => {
+          // Compact by replaying and truncating journal for this scope
+          this.replayJournal(scope, cwd, true).catch(() => {});
+          this.queryCache.clear();
+        }, thr);
+      }
       // Time-based compaction (default daily)
       const intervalMs = cfg?.maintenance?.compactIntervalMs ?? 24 * 60 * 60 * 1000;
       if (intervalMs > 0 && !this.compactionIntervals[scope]) {
@@ -255,7 +384,9 @@ export class MemoryManager {
         this.snapshotIntervals[scope] = setInterval(() => {
           const ts = new Date().toISOString();
           const checksum = this.computeScopeChecksum(scope);
-          store.writeSnapshotMeta({ lastTs: ts, checksum });
+          if (store.writeSnapshotMeta) {
+            store.writeSnapshotMeta({ lastTs: ts, checksum });
+          }
         }, snapMs);
       }
       // Config hot-reload watcher
@@ -425,7 +556,13 @@ export class MemoryManager {
 
     await store.writeItem(item);
     this.queryCache.clear();
-    this.scheduleIndexUpsert(item.scope, item);
+
+    // For non-video storage, schedule traditional index update
+    const currentStorageBackend = this.detectStorageBackend(this.resolver.getScopeDirectory(item.scope));
+    if (currentStorageBackend !== 'video') {
+      this.scheduleIndexUpsert(item.scope, item);
+    }
+
     log(`Memory upsert completed successfully: ${id}`);
     return item.id;
   }
@@ -585,7 +722,7 @@ export class MemoryManager {
         }
       } else {
         const st = this.getStore(s, cwd);
-        const list = await st.listItems();
+        const list = st.listItems ? await st.listItems() : [];
         for (const id of list) ids.push({ scope: s, id });
       }
     };
@@ -762,7 +899,7 @@ export class MemoryManager {
 
   async rebuildScope(scope: MemoryScope, cwd?: string): Promise<{ items: number }> {
     const store = this.getStore(scope, cwd);
-    const ids = await store.listItems();
+    const ids = store.listItems ? await store.listItems() : [];
     const items: MemoryItem[] = [];
     for (const id of ids) {
       const it = await store.readItem(id);
@@ -772,12 +909,22 @@ export class MemoryManager {
     const indexer = this.getIndexer(scope, cwd);
     const rank = this.getRanking(scope);
     indexer.rebuildFromItems(items, rank.fieldWeights as any);
+
+    // Also rebuild vector index for any items that have vectors
+    const vectorIndex = this.getVectorIndex(scope, cwd);
+    for (const item of items) {
+      if (item.vectors && Array.isArray(item.vectors) && item.vectors.length > 0) {
+        vectorIndex.set(item.id, item.vectors);
+      }
+    }
+
+    log(`Rebuilt scope ${scope}: ${items.length} items indexed`);
     return { items: items.length };
   }
 
   async replayJournal(scope: MemoryScope, cwd?: string, compact?: boolean): Promise<{ items: number; deleted: number }> {
     const store = this.getStore(scope, cwd);
-    const entries = await store.readJournal();
+    const entries = store.readJournal ? await store.readJournal() : [];
     const final = new Map<string, MemoryItem | null>();
     let deleted = 0;
     for (const e of entries) {
@@ -808,7 +955,9 @@ export class MemoryManager {
         updatedAt: item.updatedAt,
       };
       // Ensure item file exists
-      try { store.writeItemFileRaw(item); } catch {}
+      if (store.writeItemFileRaw) {
+        try { await store.writeItemFileRaw(item); } catch {}
+      }
     }
     store.setCatalog(catalog);
     const indexer = this.getIndexer(scope, cwd);
@@ -817,10 +966,16 @@ export class MemoryManager {
     if (compact) {
       const now = new Date().toISOString();
       const compacted = items.map(it => ({ op: 'upsert', item: it, ts: now, actor: 'compact' } as any));
-      store.replaceJournal(compacted);
+      if (store.replaceJournal) {
+        store.replaceJournal(compacted);
+      }
       const checksum = this.computeScopeChecksum(scope);
-      store.writeSnapshotMeta({ lastTs: now, checksum });
-      store.writeStateOk({ ts: now, checksum });
+      if (store.writeSnapshotMeta) {
+        store.writeSnapshotMeta({ lastTs: now, checksum });
+      }
+      if (store.writeStateOk) {
+        store.writeStateOk({ ts: now, checksum });
+      }
     }
     return { items: items.length, deleted };
   }
@@ -835,7 +990,9 @@ export class MemoryManager {
   snapshotScope(scope: MemoryScope, ts?: string, cwd?: string): void {
     const store = this.getStore(scope, cwd);
     const when = ts || new Date().toISOString();
-    store.writeSnapshotMeta({ lastTs: when });
+    if (store.writeSnapshotMeta) {
+      store.writeSnapshotMeta({ lastTs: when });
+    }
   }
 
   // ========== JOURNAL OPTIMIZATION METHODS ==========
@@ -849,6 +1006,13 @@ export class MemoryManager {
     migrationNeeded: boolean;
   }> {
     const store = this.getStore(scope, cwd);
+    if (!store.getJournalStats) {
+      return {
+        legacy: { exists: false, entries: 0, sizeBytes: 0 },
+        optimized: { exists: false, entries: 0, sizeBytes: 0 },
+        migrationNeeded: false
+      };
+    }
     return await store.getJournalStats();
   }
 
@@ -861,6 +1025,13 @@ export class MemoryManager {
     sizeReduction: { before: number; after: number; percentage: number };
   }> {
     const store = this.getStore(scope, cwd);
+    if (!store.migrateToOptimizedJournal) {
+      return {
+        migrated: 0,
+        errors: ['Migration not supported'],
+        sizeReduction: { before: 0, after: 0, percentage: 0 }
+      };
+    }
     return await store.migrateToOptimizedJournal();
   }
 
@@ -874,6 +1045,14 @@ export class MemoryManager {
     checkedCount: number;
   }> {
     const store = this.getStore(scope, cwd);
+    if (!store.verifyIntegrityFromOptimizedJournal) {
+      return {
+        valid: false,
+        corruptedItems: [],
+        integrityScore: 0,
+        checkedCount: 0
+      };
+    }
     return await store.verifyIntegrityFromOptimizedJournal();
   }
 
@@ -963,8 +1142,8 @@ export class MemoryManager {
 
   verifyScope(scope: MemoryScope, cwd?: string): { ok: boolean; checksum?: string; snapshotChecksum?: string; lastTs?: string; okState?: boolean } {
     const store = this.getStore(scope, cwd);
-    const snap = store.readSnapshotMeta();
-    const state = store.readStateOk();
+    const snap = store.readSnapshotMeta ? store.readSnapshotMeta() : null;
+    const state = store.readStateOk ? store.readStateOk() : null;
     const checksum = this.computeScopeChecksum(scope, cwd);
     const snapshotChecksum = snap?.checksum;
     const stateChecksum = state?.checksum;
@@ -985,7 +1164,7 @@ export class MemoryManager {
     for (const s of scopes) {
       try {
         const store = this.getStore(s);
-        const snap = store.readSnapshotMeta();
+        const snap = store.readSnapshotMeta ? store.readSnapshotMeta() : null;
         if (!snap || !snap.lastTs) {
           // Fallback: full replay (no compact)
           await this.replayJournal(s, undefined, false);
@@ -999,7 +1178,7 @@ export class MemoryManager {
             continue;
           }
         }
-        const tail = await store.readJournalSince(snap.lastTs);
+        const tail = store.readJournalSince ? await store.readJournalSince(snap.lastTs) : [];
         if (!tail.length) continue;
         // Apply tail incrementally to catalog and index
         const catalog = store.readCatalog();
@@ -1010,7 +1189,9 @@ export class MemoryManager {
         for (const e of tail) {
           if (e.op === 'upsert' && e.item) {
             const it = e.item as MemoryItem;
-            await store.writeItemFileRaw(it);
+            if (store.writeItemFileRaw) {
+              await store.writeItemFileRaw(it);
+            }
             catalog[it.id] = {
               id: it.id, type: it.type, scope: it.scope, title: it.title,
               tags: it.facets.tags, files: it.facets.files, symbols: it.facets.symbols,
@@ -1019,7 +1200,9 @@ export class MemoryManager {
             };
             indexer.updateItem(it, weights);
           } else if (e.op === 'delete' && e.id) {
-            store.removeItemFileRaw(e.id);
+            if (store.removeItemFileRaw) {
+              store.removeItemFileRaw(e.id);
+            }
             delete (catalog as any)[e.id];
             indexer.removeItem(e.id);
             // prune vector if present
@@ -1034,8 +1217,12 @@ export class MemoryManager {
         store.setCatalog(catalog);
         if (last) {
           const checksum = this.computeScopeChecksum(s);
-          store.writeSnapshotMeta({ lastTs: last, checksum });
-          store.writeStateOk({ ts: new Date().toISOString(), checksum });
+          if (store.writeSnapshotMeta) {
+            store.writeSnapshotMeta({ lastTs: last, checksum });
+          }
+          if (store.writeStateOk) {
+            store.writeStateOk({ ts: new Date().toISOString(), checksum });
+          }
         }
       } catch {
         // ignore per-scope failures at startup
@@ -1109,10 +1296,12 @@ export class MemoryManager {
       const cfg = store.readConfig();
       // Update compaction threshold
       const thr = cfg?.maintenance?.compactEvery || 500;
-      store.setCompactionHook(() => {
-        this.replayJournal(scope, cwd, true).catch(() => {});
-        this.queryCache.clear();
-      }, thr);
+      if (store.setCompactionHook) {
+        store.setCompactionHook(() => {
+          this.replayJournal(scope, cwd, true).catch(() => {});
+          this.queryCache.clear();
+        }, thr);
+      }
       // Update time-based compaction interval
       const intervalMs = cfg?.maintenance?.compactIntervalMs ?? 24 * 60 * 60 * 1000;
       if (this.compactionIntervals[scope]) { clearInterval(this.compactionIntervals[scope]!); delete this.compactionIntervals[scope]; }
@@ -1129,7 +1318,10 @@ export class MemoryManager {
         this.snapshotIntervals[scope] = setInterval(() => {
           const ts = new Date().toISOString();
           const checksum = this.computeScopeChecksum(scope);
-          this.getStore(scope).writeSnapshotMeta({ lastTs: ts, checksum });
+          const store = this.getStore(scope);
+          if (store?.writeSnapshotMeta) {
+            store.writeSnapshotMeta({ lastTs: ts, checksum });
+          }
         }, snapMs);
       }
     } catch {}
@@ -1190,7 +1382,7 @@ export class MemoryManager {
     const allowed = cfg?.sharing?.sensitivity || 'team';
     log(`Sync merge: allowed sensitivity level is ${allowed}`);
     const rank = (s: string) => (s === 'public' ? 0 : s === 'team' ? 1 : 2);
-    const list = ids && ids.length ? ids : await localStore.listItems();
+    const list = ids && ids.length ? ids : (localStore.listItems ? await localStore.listItems() : []);
     for (const id of list) {
       const item = await localStore.readItem(id);
       if (!item) continue;
@@ -1455,5 +1647,79 @@ export class MemoryManager {
       links,
       source: { scope: result.scope, ids: items.map(i => i.id) },
     };
+  }
+
+  /**
+   * Gracefully dispose of all resources and cleanup timers, watchers, and storage adapters.
+   * This method ensures proper resource cleanup during server shutdown.
+   */
+  async dispose(): Promise<void> {
+    log('Starting MemoryManager cleanup...');
+
+    try {
+      // Clear all compaction timers
+      for (const [scope, timer] of Object.entries(this.compactionIntervals)) {
+        if (timer) {
+          clearInterval(timer);
+          delete this.compactionIntervals[scope as MemoryScope];
+        }
+      }
+
+      // Clear all snapshot timers
+      for (const [scope, timer] of Object.entries(this.snapshotIntervals)) {
+        if (timer) {
+          clearInterval(timer);
+          delete this.snapshotIntervals[scope as MemoryScope];
+        }
+      }
+
+      // Clear all index update timers
+      for (const [scope, timer] of Object.entries(this.indexTimers)) {
+        if (timer) {
+          clearTimeout(timer);
+          delete this.indexTimers[scope as MemoryScope];
+        }
+      }
+
+      // Clear all config debounce timers
+      for (const [scope, timer] of Object.entries(this.configDebounce)) {
+        if (timer) {
+          clearTimeout(timer);
+          delete this.configDebounce[scope as MemoryScope];
+        }
+      }
+
+      // Close all file watchers
+      for (const [scope, watcher] of Object.entries(this.configWatchers)) {
+        if (watcher) {
+          watcher.close();
+          delete this.configWatchers[scope as MemoryScope];
+        }
+      }
+
+      // Dispose of all storage adapters
+      for (const [scope, store] of Object.entries(this.stores)) {
+        if (store && typeof store.destroy === 'function') {
+          try {
+            await store.destroy();
+          } catch (error) {
+            log(`Warning: Failed to dispose storage adapter for ${scope}:`, error);
+          }
+        }
+      }
+
+      // Clear all collections
+      this.stores = {};
+      this.indexers = {};
+      this.vectorIdx = {};
+      this.queryCache.clear();
+      this.indexUpserts = {};
+      this.indexDeletes = {};
+
+      log('MemoryManager cleanup completed successfully');
+    } catch (error) {
+      log('Error during MemoryManager cleanup:', error);
+      throw error;
+    }
   }
 }

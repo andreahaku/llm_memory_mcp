@@ -28,7 +28,7 @@ let lastTime = 0;
 let lastRandom = '';
 
 export function ulid(): string {
-  let time = Date.now();
+  const time = Date.now();
   if (time === lastTime) {
     // bump random if same ms to preserve monotonic-ish ordering
     lastRandom = bumpRandom(lastRandom);

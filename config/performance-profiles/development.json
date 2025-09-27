@@ -1,0 +1,237 @@
+{
+  "profile_name": "development",
+  "description": "Development and testing configuration with detailed logging and debugging",
+  "target_environment": "Development machines and CI/CD environments",
+
+  "server": {
+    "name": "llm-memory-mcp",
+    "version": "1.0.0",
+    "environment": "development",
+    "transport": "stdio"
+  },
+
+  "video_storage": {
+    "encoder": {
+      "type": "wasm",
+      "fallback": "native",
+      "compression": {
+        "crf": 30,
+        "preset": "ultrafast",
+        "tune": "zerolatency",
+        "format": "mp4",
+        "codec": "libx264"
+      },
+      "optimization": {
+        "batch_size": 10,
+        "max_queue_size": 100,
+        "background_encoding": false,
+        "late_materialization": false,
+        "content_deduplication": false
+      }
+    },
+    "qr_encoding": {
+      "error_correction": "L",
+      "chunk_size": 256,
+      "max_version": 10,
+      "margin": 2,
+      "scale": 4
+    },
+    "segments": {
+      "max_duration": 60,
+      "target_size_mb": 10,
+      "overlap_frames": 0,
+      "compression_ratio_target": 50
+    },
+    "frame_index": {
+      "sampling_rate": 10,
+      "enhanced_indexing": false,
+      "bloom_filter_size": 10000,
+      "hash_functions": 3
+    }
+  },
+
+  "memory_management": {
+    "cache": {
+      "payload_cache_size_gb": 0.5,
+      "index_cache_size_mb": 64,
+      "catalog_cache_size_mb": 32,
+      "ttl_seconds": 300
+    },
+    "storage": {
+      "auto_cleanup": false,
+      "cleanup_interval_hours": 168,
+      "retention_days": 7,
+      "archive_threshold_days": 3
+    },
+    "search": {
+      "bm25_k1": 1.2,
+      "bm25_b": 0.75,
+      "boost_pinned": 1.5,
+      "boost_recent": 1.0,
+      "boost_exact_match": 2.0,
+      "max_results": 25
+    }
+  },
+
+  "background_processing": {
+    "enable": false,
+    "workers": 1,
+    "queue": {
+      "max_size": 50,
+      "batch_timeout_ms": 1000,
+      "retry_attempts": 1,
+      "retry_backoff_ms": 500
+    },
+    "encoding": {
+      "max_concurrent": 1,
+      "priority_encoding": false,
+      "adaptive_quality": false
+    },
+    "indexing": {
+      "rebuild_interval_hours": 24,
+      "optimize_interval_hours": 168,
+      "maintenance_window": "never"
+    }
+  },
+
+  "logging": {
+    "level": "debug",
+    "format": "pretty",
+    "outputs": [
+      {
+        "type": "console",
+        "level": "debug",
+        "colors": true
+      },
+      {
+        "type": "file",
+        "path": "/tmp/llm-memory-mcp-dev.log",
+        "level": "trace",
+        "rotation": {
+          "max_size": "10MB",
+          "max_files": 3,
+          "compress": false
+        }
+      }
+    ],
+    "debug": {
+      "trace_operations": true,
+      "log_payloads": true,
+      "performance_timing": true,
+      "memory_snapshots": true
+    }
+  },
+
+  "monitoring": {
+    "metrics": {
+      "enable": true,
+      "port": 9090,
+      "path": "/metrics",
+      "collect_interval_ms": 5000
+    },
+    "health_check": {
+      "enable": true,
+      "port": 8080,
+      "path": "/health",
+      "timeout_ms": 1000,
+      "checks": [
+        "storage_accessible",
+        "video_encoder_available"
+      ]
+    },
+    "alerts": {
+      "memory_usage_threshold": 95,
+      "disk_usage_threshold": 95,
+      "queue_size_threshold": 40,
+      "encoding_failure_rate_threshold": 0.50
+    },
+    "development": {
+      "profile_memory": true,
+      "profile_cpu": true,
+      "trace_gc": true,
+      "detailed_metrics": true
+    }
+  },
+
+  "security": {
+    "secret_redaction": {
+      "enable": false
+    },
+    "validation": {
+      "max_memory_size_mb": 10,
+      "max_title_length": 50,
+      "max_content_length": 65536,
+      "allowed_file_types": [".txt", ".md", ".json"],
+      "sanitize_input": false
+    },
+    "rate_limiting": {
+      "enable": false
+    }
+  },
+
+  "performance": {
+    "gc": {
+      "max_old_space_size": 1024,
+      "expose_gc": true
+    },
+    "optimization": {
+      "lazy_loading": false,
+      "batch_operations": false,
+      "compression_level": 1,
+      "memory_mapped_files": false
+    },
+    "limits": {
+      "max_concurrent_operations": 5,
+      "max_memory_items": 1000,
+      "max_video_segments": 50
+    }
+  },
+
+  "ffmpeg": {
+    "binary_path": "/usr/bin/ffmpeg",
+    "timeout_ms": 10000,
+    "max_parallel": 1,
+    "temp_dir": "/tmp/llm-memory-dev",
+    "cleanup_temp": false,
+    "verbose_logging": true
+  },
+
+  "development": {
+    "hot_reload": true,
+    "auto_rebuild_indexes": true,
+    "detailed_errors": true,
+    "test_data": {
+      "generate_sample_data": true,
+      "sample_data_size": 100,
+      "include_video_samples": true
+    },
+    "debugging": {
+      "break_on_errors": false,
+      "inspector_port": 9229,
+      "source_maps": true
+    }
+  },
+
+  "testing": {
+    "mock_external_services": true,
+    "test_timeout_ms": 5000,
+    "coverage_reporting": true,
+    "integration_tests": true
+  },
+
+  "tuning": {
+    "profile_optimizations": [
+      "Fast startup for development iteration",
+      "Detailed logging and debugging information",
+      "Minimal resource usage for local development",
+      "No background processing for predictable behavior",
+      "Easy debugging and profiling"
+    ],
+    "recommended_hardware": {
+      "cpu_cores": 2,
+      "memory_gb": 4,
+      "storage_type": "Any",
+      "network_bandwidth": "Any"
+    }
+  }
+}
