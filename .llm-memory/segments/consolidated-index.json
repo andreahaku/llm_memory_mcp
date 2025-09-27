@@ -1,0 +1,305 @@
+{
+  "version": "1.0.0",
+  "totalFrames": 14,
+  "totalItems": 14,
+  "createdAt": "2025-09-27T12:40:35.150Z",
+  "updatedAt": "2025-09-27T12:43:40.327Z",
+  "items": {
+    "01K65K0ZE4MZ8C8MSBQZRVV22B": {
+      "frameStart": 0,
+      "frameEnd": 0,
+      "chunkCount": 1,
+      "contentHash": "2625b5a18683a3040d07bd94806897f0ce3b0ab69525dfd73aff4b6a2905ad90",
+      "manifest": [
+        {
+          "frameIndex": 0,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2045,
+      "encodedSize": 1039,
+      "isCompressed": true
+    },
+    "01K65K1CVN59EZ513JSYHH9894": {
+      "frameStart": 1,
+      "frameEnd": 1,
+      "chunkCount": 1,
+      "contentHash": "7cd60d69899b48c16fe88006b9e2ebb630fc6ebe4a361097a97739012b5ddae9",
+      "manifest": [
+        {
+          "frameIndex": 1,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2337,
+      "encodedSize": 1175,
+      "isCompressed": true
+    },
+    "01K65K1W3VR03P6FGQ0E9WMHV7": {
+      "frameStart": 2,
+      "frameEnd": 2,
+      "chunkCount": 1,
+      "contentHash": "2c2b33bd5e064a620edf25e63fbf138d6c347808b1646bd81f9cd0ea278aff16",
+      "manifest": [
+        {
+          "frameIndex": 2,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2264,
+      "encodedSize": 1108,
+      "isCompressed": true
+    },
+    "01K65K2RQ2HV1TVWE6QPR3JYSB": {
+      "frameStart": 3,
+      "frameEnd": 3,
+      "chunkCount": 1,
+      "contentHash": "02c9606fdaa7b8e02d8263696a0fbe781c21dce71f4fd7fd95307f89e7c86642",
+      "manifest": [
+        {
+          "frameIndex": 3,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 1808,
+      "encodedSize": 915,
+      "isCompressed": true
+    },
+    "01K65K2RXWST2YPWAFNY5QFMV3": {
+      "frameStart": 4,
+      "frameEnd": 4,
+      "chunkCount": 1,
+      "contentHash": "1f44c35d283869aea37181285268c8cf2772449e28c8ec6a1d17ab41c5c8ec4f",
+      "manifest": [
+        {
+          "frameIndex": 4,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 1799,
+      "encodedSize": 866,
+      "isCompressed": true
+    },
+    "01K65K2S5HS84BZJE2RTQYNDTV": {
+      "frameStart": 5,
+      "frameEnd": 5,
+      "chunkCount": 1,
+      "contentHash": "ac213b1043bb1ae7e193a340bd76b7fe72a01de5d654097cb846d74af6b5cb61",
+      "manifest": [
+        {
+          "frameIndex": 5,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 1855,
+      "encodedSize": 990,
+      "isCompressed": true
+    },
+    "01K65K3ZGA0ZP5FCCWN1CP1K26": {
+      "frameStart": 6,
+      "frameEnd": 6,
+      "chunkCount": 1,
+      "contentHash": "85961507f8bc6205b6a78273e33a995839004bae91d57d37c700c22761afeecf",
+      "manifest": [
+        {
+          "frameIndex": 6,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2131,
+      "encodedSize": 1044,
+      "isCompressed": true
+    },
+    "01K65K3ZSP7TG7KTJFTJEVW12E": {
+      "frameStart": 7,
+      "frameEnd": 7,
+      "chunkCount": 1,
+      "contentHash": "bdf8a04365b88ce79608ff3195d8e3b1bcd6eac00781635e05bd71fbf3db6d28",
+      "manifest": [
+        {
+          "frameIndex": 7,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2161,
+      "encodedSize": 1138,
+      "isCompressed": true
+    },
+    "01K65K403FW7KCRX66KXE4GHV8": {
+      "frameStart": 8,
+      "frameEnd": 8,
+      "chunkCount": 1,
+      "contentHash": "6834b66f2d33d40e1fa81023a50a11bab301fb33ed756fd2d572e8f91fcc9fbb",
+      "manifest": [
+        {
+          "frameIndex": 8,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2256,
+      "encodedSize": 1170,
+      "isCompressed": true
+    },
+    "01K65K5JTF7JP9MXB1PJHQ6ZRD": {
+      "frameStart": 9,
+      "frameEnd": 9,
+      "chunkCount": 1,
+      "contentHash": "56a1927e7d8faf69ece6d216bf9c22cc01d718e509b3fa0a402bd96d3e800bce",
+      "manifest": [
+        {
+          "frameIndex": 9,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2588,
+      "encodedSize": 1312,
+      "isCompressed": true
+    },
+    "01K65K5K61583YVN5A0JRGD57B": {
+      "frameStart": 10,
+      "frameEnd": 10,
+      "chunkCount": 1,
+      "contentHash": "8cb162ca77a21dd7ecc18f81dfa4e12a4383dade23ae350921f582ab7ec4ae22",
+      "manifest": [
+        {
+          "frameIndex": 10,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2660,
+      "encodedSize": 1250,
+      "isCompressed": true
+    },
+    "01K65K5KK1P4RHDSFFEVQR5NVT": {
+      "frameStart": 11,
+      "frameEnd": 11,
+      "chunkCount": 1,
+      "contentHash": "c09c730707c19a3b8bdb519215cf645f8808b186fd380cf0c47bd610cd669d80",
+      "manifest": [
+        {
+          "frameIndex": 11,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2752,
+      "encodedSize": 1312,
+      "isCompressed": true
+    },
+    "01K65K6KKR62WFEJB63ZTPHJHH": {
+      "frameStart": 12,
+      "frameEnd": 12,
+      "chunkCount": 1,
+      "contentHash": "ff7107640b6685db2c83ba9518a12d4f6a7acb5b3e504c9d42bdd4d604f57b22",
+      "manifest": [
+        {
+          "frameIndex": 12,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2575,
+      "encodedSize": 1132,
+      "isCompressed": true
+    },
+    "01K65K6M11ZT1HQAN7EW6YF050": {
+      "frameStart": 13,
+      "frameEnd": 13,
+      "chunkCount": 1,
+      "contentHash": "b7e07baa061337ba4e3605a1fcd86aeaf0cfe4e470fc5acd86f5632ab90d4b88",
+      "manifest": [
+        {
+          "frameIndex": 13,
+          "chunkIndex": 0,
+          "byteOffset": 0
+        }
+      ],
+      "originalSize": 2672,
+      "encodedSize": 1214,
+      "isCompressed": true
+    }
+  },
+  "contentHashes": {
+    "2625b5a18683a3040d07bd94806897f0ce3b0ab69525dfd73aff4b6a2905ad90": {
+      "itemId": "01K65K0ZE4MZ8C8MSBQZRVV22B",
+      "frameStart": 0,
+      "frameEnd": 0
+    },
+    "7cd60d69899b48c16fe88006b9e2ebb630fc6ebe4a361097a97739012b5ddae9": {
+      "itemId": "01K65K1CVN59EZ513JSYHH9894",
+      "frameStart": 1,
+      "frameEnd": 1
+    },
+    "2c2b33bd5e064a620edf25e63fbf138d6c347808b1646bd81f9cd0ea278aff16": {
+      "itemId": "01K65K1W3VR03P6FGQ0E9WMHV7",
+      "frameStart": 2,
+      "frameEnd": 2
+    },
+    "02c9606fdaa7b8e02d8263696a0fbe781c21dce71f4fd7fd95307f89e7c86642": {
+      "itemId": "01K65K2RQ2HV1TVWE6QPR3JYSB",
+      "frameStart": 3,
+      "frameEnd": 3
+    },
+    "1f44c35d283869aea37181285268c8cf2772449e28c8ec6a1d17ab41c5c8ec4f": {
+      "itemId": "01K65K2RXWST2YPWAFNY5QFMV3",
+      "frameStart": 4,
+      "frameEnd": 4
+    },
+    "ac213b1043bb1ae7e193a340bd76b7fe72a01de5d654097cb846d74af6b5cb61": {
+      "itemId": "01K65K2S5HS84BZJE2RTQYNDTV",
+      "frameStart": 5,
+      "frameEnd": 5
+    },
+    "85961507f8bc6205b6a78273e33a995839004bae91d57d37c700c22761afeecf": {
+      "itemId": "01K65K3ZGA0ZP5FCCWN1CP1K26",
+      "frameStart": 6,
+      "frameEnd": 6
+    },
+    "bdf8a04365b88ce79608ff3195d8e3b1bcd6eac00781635e05bd71fbf3db6d28": {
+      "itemId": "01K65K3ZSP7TG7KTJFTJEVW12E",
+      "frameStart": 7,
+      "frameEnd": 7
+    },
+    "6834b66f2d33d40e1fa81023a50a11bab301fb33ed756fd2d572e8f91fcc9fbb": {
+      "itemId": "01K65K403FW7KCRX66KXE4GHV8",
+      "frameStart": 8,
+      "frameEnd": 8
+    },
+    "56a1927e7d8faf69ece6d216bf9c22cc01d718e509b3fa0a402bd96d3e800bce": {
+      "itemId": "01K65K5JTF7JP9MXB1PJHQ6ZRD",
+      "frameStart": 9,
+      "frameEnd": 9
+    },
+    "8cb162ca77a21dd7ecc18f81dfa4e12a4383dade23ae350921f582ab7ec4ae22": {
+      "itemId": "01K65K5K61583YVN5A0JRGD57B",
+      "frameStart": 10,
+      "frameEnd": 10
+    },
+    "c09c730707c19a3b8bdb519215cf645f8808b186fd380cf0c47bd610cd669d80": {
+      "itemId": "01K65K5KK1P4RHDSFFEVQR5NVT",
+      "frameStart": 11,
+      "frameEnd": 11
+    },
+    "ff7107640b6685db2c83ba9518a12d4f6a7acb5b3e504c9d42bdd4d604f57b22": {
+      "itemId": "01K65K6KKR62WFEJB63ZTPHJHH",
+      "frameStart": 12,
+      "frameEnd": 12
+    },
+    "b7e07baa061337ba4e3605a1fcd86aeaf0cfe4e470fc5acd86f5632ab90d4b88": {
+      "itemId": "01K65K6M11ZT1HQAN7EW6YF050",
+      "frameStart": 13,
+      "frameEnd": 13
+    }
+  }
+}
