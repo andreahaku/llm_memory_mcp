@@ -32,6 +32,7 @@ type PartialBy<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 export class MemoryManager {
   private resolver = new ScopeResolver();
   private storageAdapterFactory: StorageAdapterFactory = new FileStorageAdapterFactory();
+  private defaultBackendPreference: 'file' | 'video' | null = null;
 
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, StorageAdapter>> = {};
@@ -238,6 +239,42 @@ export class MemoryManager {
     delete this.stores[scope];
   }
 
+  /**
+   * Set the default backend preference for new scopes
+   */
+  setDefaultBackend(backend: 'file' | 'video' | null): void {
+    this.defaultBackendPreference = backend;
+    log(`Default storage backend preference set to: ${backend}`);
+  }
+
+  /**
+   * Get the global default backend preference
+   */
+  private getGlobalDefaultBackend(): 'file' | 'video' | null {
+    if (this.defaultBackendPreference !== null) {
+      return this.defaultBackendPreference;
+    }
+
+    // Auto-detect based on FFmpeg availability
+    return this.detectOptimalDefaultBackend();
+  }
+
+  /**
+   * Detect the optimal default backend based on system capabilities
+   */
+  private detectOptimalDefaultBackend(): 'file' | 'video' {
+    try {
+      // Check if FFmpeg is available and working
+      const { execSync } = require('child_process');
+      execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
+      log('FFmpeg detected - defaulting to video storage backend');
+      return 'video';
+    } catch (error) {
+      log('FFmpeg not available - defaulting to file storage backend');
+      return 'file';
+    }
+  }
+
   private detectStorageBackend(dir: string): 'file' | 'video' {
     try {
       const configPath = path.join(dir, 'config.json');
@@ -263,6 +300,14 @@ export class MemoryManager {
           return 'video';
         }
       }
+
+      // Check for a default backend preference from environment or global config
+      const defaultBackend = process.env.LLM_MEMORY_DEFAULT_BACKEND || this.getGlobalDefaultBackend();
+      if (defaultBackend === 'video' || defaultBackend === 'file') {
+        log(`Using default storage backend preference: ${defaultBackend}`);
+        return defaultBackend;
+      }
+
       return 'file';
     } catch (error) {
       log(`Error detecting storage backend for ${dir}:`, error);

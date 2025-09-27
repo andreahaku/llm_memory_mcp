@@ -77,7 +77,7 @@ coverage/
 .parcel-cache
 
 # Local memory data (for testing)
-.llm-memory/
+.llm-memory_backup_*/
 
 # Test artifacts
 test-results/

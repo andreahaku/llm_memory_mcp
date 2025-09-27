@@ -758,7 +758,18 @@ class LLMKnowledgeBaseServer {
 
           case 'project.config.set': {
             const scope = args.scope as MemoryScope;
-            this.memory.writeConfig(scope, args.config as any);
+            const config = args.config as any;
+
+            // If setting storage backend, also update the default backend preference
+            if (config?.storage?.backend) {
+              const backend = config.storage.backend;
+              if (backend === 'video' || backend === 'file') {
+                log(`Setting default backend preference to: ${backend}`);
+                this.memory.setDefaultBackend(backend);
+              }
+            }
+
+            this.memory.writeConfig(scope, config);
             return { content: [{ type: 'text', text: 'project.config.set: ok' }] };
           }
 

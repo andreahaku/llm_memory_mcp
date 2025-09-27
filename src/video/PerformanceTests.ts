@@ -269,12 +269,22 @@ export class VideoStoragePerformanceTester {
         title: `Test Item ${i + 1}: Performance Test Data`,
         text: this.generateTestContent(i),
         code: i % 3 === 0 ? this.generateCodeSnippet(i) : undefined,
-        tags: [`tag-${i % 10}`, `category-${Math.floor(i / 100)}`],
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          createdBy: 'PerformanceTest'
-        }
+        facets: {
+          tags: [`tag-${i % 10}`, `category-${Math.floor(i / 100)}`],
+          files: [],
+          symbols: []
+        },
+        context: {},
+        quality: {
+          confidence: 0.8,
+          reuseCount: 0
+        },
+        security: {
+          sensitivity: 'private'
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        version: 1
       };
 
       items.push(item);
@@ -546,11 +556,22 @@ export async function validateVideoStoragePerformance(
       scope: 'local' as any,
       title: `Quick Test Item ${i}`,
       text: `Test content for quick validation ${i}`,
-      metadata: {
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        createdBy: 'QuickTest'
-      }
+      facets: {
+        tags: [],
+        files: [],
+        symbols: []
+      },
+      context: {},
+      quality: {
+        confidence: 0.8,
+        reuseCount: 0
+      },
+      security: {
+        sensitivity: 'private' as any
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1
     }));
 
     // Write items
