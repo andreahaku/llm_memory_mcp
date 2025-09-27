@@ -1,5 +1,7 @@
 import { readBarcodes, prepareZXingModule } from 'zxing-wasm';
 import * as zlib from 'zlib';
+import { createRequire } from 'node:module';
+import { existsSync, readFileSync } from 'node:fs';
 
 /**
  * ImageData-like interface for decoder input
@@ -80,6 +82,36 @@ export class QRDecoder {
   private readonly MAGIC_NUMBER = 0x4D454D56; // "MEMV"
   private readonly CHUNK_HEADER_SIZE = 16;
 
+  private static readonly localWasm = (() => {
+    try {
+      const moduleSpecifier = typeof __filename === 'string' ? __filename : process.cwd();
+      const requireForZXing = createRequire(moduleSpecifier);
+
+      let wasmPath: string;
+      try {
+        wasmPath = requireForZXing.resolve('zxing-wasm/full/zxing_full.wasm');
+      } catch (resolveError) {
+        console.warn('Unable to resolve ZXing WASM via package exports:', resolveError);
+        return null;
+      }
+
+      if (!existsSync(wasmPath)) {
+        return null;
+      }
+
+      const wasmBuffer = readFileSync(wasmPath);
+      const wasmBinary = wasmBuffer.buffer.slice(
+        wasmBuffer.byteOffset,
+        wasmBuffer.byteOffset + wasmBuffer.byteLength
+      );
+
+      return { wasmPath, wasmBinary };
+    } catch (error) {
+      console.warn('Unable to resolve local ZXing WASM binary, falling back to default fetch:', error);
+      return null;
+    }
+  })();
+
   /**
    * Initialize the ZXing WASM module
    */
@@ -88,7 +120,20 @@ export class QRDecoder {
 
     try {
       // Prepare the ZXing module for immediate use
-      await prepareZXingModule({ fireImmediately: true });
+      const localResources = QRDecoder.localWasm;
+
+      await prepareZXingModule({
+        fireImmediately: true,
+        ...(localResources
+          ? {
+              overrides: {
+                locateFile: (file: string, prefix: string) =>
+                  file.endsWith('.wasm') ? localResources.wasmPath : prefix + file,
+                wasmBinary: localResources.wasmBinary
+              }
+            }
+          : {})
+      });
       this.initialized = true;
     } catch (error) {
       throw new Error(`Failed to initialize ZXing WASM module: ${error instanceof Error ? error.message : String(error)}`);
