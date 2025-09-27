@@ -2,24 +2,27 @@ import type { MemoryItem, MemoryScope, MemoryType, MemoryConfig } from '../types
 import type { StorageAdapter, StorageAdapterFactory } from '../storage/StorageAdapter.js';
 import { FileStorageAdapterFactory } from '../storage/FileStorageAdapter.js';
 import { ScopeResolver } from '../scope/ScopeResolver.js';
-import { ulid } from '../util/ulid.js';
+
+function log(message: string, ...args: any[]) {
+  console.error(`[MigrationManager] ${new Date().toISOString()} ${message}`, ...args);
+}
 
 // Dynamic import for video storage to avoid startup dependencies
 let VideoStorageAdapterFactory: any = null;
 async function loadVideoStorageAdapterFactory() {
   if (!VideoStorageAdapterFactory) {
     try {
-      console.log('[MigrationManager] 🔄 Loading VideoStorageAdapterFactory...');
+      log('🔄 Loading VideoStorageAdapterFactory...');
       const videoModule = await import('../storage/VideoStorageAdapter.js');
       VideoStorageAdapterFactory = videoModule.VideoStorageAdapterFactory;
-      console.log('[MigrationManager] ✅ VideoStorageAdapterFactory loaded successfully');
+      log('✅ VideoStorageAdapterFactory loaded successfully');
       return VideoStorageAdapterFactory;
     } catch (error) {
       console.warn('[MigrationManager] ❌ Video storage adapter not available:', (error as Error).message);
       return null;
     }
   }
-  console.log('[MigrationManager] ✅ VideoStorageAdapterFactory already cached');
+  log('✅ VideoStorageAdapterFactory already cached');
   return VideoStorageAdapterFactory;
 }
 
@@ -90,12 +93,12 @@ export class MigrationManager {
     }
 
     if (backend === 'video') {
-      console.log('[MigrationManager] 🎬 Requesting video storage factory...');
+      log('🎬 Requesting video storage factory...');
       const VideoFactory = await loadVideoStorageAdapterFactory();
       if (!VideoFactory) {
         throw new Error('Video storage backend is not available. FFmpeg dependencies may not be installed or failed to load.');
       }
-      console.log('[MigrationManager] 🏭 Creating VideoStorageAdapterFactory instance...');
+      log('🏭 Creating VideoStorageAdapterFactory instance...');
       return new VideoFactory();
     }
 
@@ -116,7 +119,7 @@ export class MigrationManager {
       onProgress
     } = options;
 
-    console.log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope`);
+    log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope`);
 
     // Get directories for source and target
     const sourceDir = this.scopeResolver.getScopeDirectory(scope);
@@ -133,19 +136,19 @@ export class MigrationManager {
       throw new Error(`${targetBackend} storage backend is not available (missing dependencies)`);
     }
 
-    console.log(`[MigrationManager] 📁 Creating source adapter (${sourceBackend}) for: ${sourceDir}`);
+    log(`📁 Creating source adapter (${sourceBackend}) for: ${sourceDir}`);
     const sourceAdapter = sourceFactory.create(sourceDir, scope);
 
-    console.log(`[MigrationManager] 📁 Creating target adapter (${targetBackend}) for: ${targetDir}`);
+    log(`📁 Creating target adapter (${targetBackend}) for: ${targetDir}`);
     const targetAdapter = targetFactory.create(targetDir, scope);
 
     // Initialize adapters to trigger video encoder setup
     if (targetBackend === 'video') {
-      console.log('[MigrationManager] 🎯 Initializing video storage adapter...');
+      log('🎯 Initializing video storage adapter...');
       if (targetAdapter.initialize) {
         await targetAdapter.initialize();
       }
-      console.log('[MigrationManager] ✅ Video storage adapter initialized');
+      log('✅ Video storage adapter initialized');
     }
 
     const progress: MigrationProgress = {
@@ -166,7 +169,7 @@ export class MigrationManager {
       progress.totalItems = sourceItemIds.length;
 
       if (dryRun) {
-        console.log(`DRY RUN: Would migrate ${progress.totalItems} items from ${sourceBackend} to ${targetBackend}`);
+        log(`DRY RUN: Would migrate ${progress.totalItems} items from ${sourceBackend} to ${targetBackend}`);
         return this.validateMigration(sourceAdapter, targetAdapter, sourceItemIds);
       }
 
@@ -177,29 +180,47 @@ export class MigrationManager {
         await this.createBackup(sourceAdapter, scope, sourceBackend);
       }
 
-      // Phase 3: Migrate items
+      // Phase 3: Migrate items with batching to prevent event loop blocking
       progress.phase = 'migrating_items';
       onProgress?.(progress);
 
-      for (const itemId of sourceItemIds) {
-        progress.currentItem = itemId;
-        onProgress?.(progress);
+      const batchSize = Number(process.env.LLM_MEMORY_MIGRATION_BATCH_SIZE) || 50;
+      const maxProcessingTime = Number(process.env.LLM_MEMORY_MIGRATION_MAX_TIME_MS) || 30000;
+      const startTime = Date.now();
 
-        try {
-          const item = await sourceAdapter.readItem(itemId);
-          if (item) {
-            console.log(`[MigrationManager] 📝 Writing item ${itemId} to ${targetBackend} storage...`);
-            await targetAdapter.writeItem(item);
-            console.log(`[MigrationManager] ✅ Successfully wrote item ${itemId}`);
-            progress.itemsProcessed++;
-          } else {
-            progress.errors.push({ id: itemId, error: 'Failed to read item from source' });
+      for (let i = 0; i < sourceItemIds.length; i += batchSize) {
+        // Check for timeout to prevent long-running operations
+        if (Date.now() - startTime > maxProcessingTime) {
+          log(`⚠️ Migration timeout reached after ${maxProcessingTime}ms, deferring remaining items`);
+          break;
+        }
+
+        const batch = sourceItemIds.slice(i, i + batchSize);
+        log(`Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(sourceItemIds.length / batchSize)} (${batch.length} items)`);
+
+        for (const itemId of batch) {
+          progress.currentItem = itemId;
+          onProgress?.(progress);
+
+          try {
+            const item = await sourceAdapter.readItem(itemId);
+            if (item) {
+              await targetAdapter.writeItem(item);
+              progress.itemsProcessed++;
+            } else {
+              progress.errors.push({ id: itemId, error: 'Failed to read item from source' });
+            }
+          } catch (error) {
+            progress.errors.push({
+              id: itemId,
+              error: error instanceof Error ? error.message : String(error)
+            });
           }
-        } catch (error) {
-          progress.errors.push({
-            id: itemId,
-            error: error instanceof Error ? error.message : String(error)
-          });
+        }
+
+        // Yield control to the event loop between batches
+        if (i + batchSize < sourceItemIds.length) {
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
 
@@ -252,7 +273,7 @@ export class MigrationManager {
       progress.estimatedCompletion = new Date();
       onProgress?.(progress);
 
-      console.log(`Migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
+      log(`Migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
 
       return validationResult;
 
@@ -276,7 +297,7 @@ export class MigrationManager {
       onProgress
     } = options;
 
-    console.log(`Starting scope migration: ${sourceScope} → ${targetScope} with content filtering`);
+    log(`Starting scope migration: ${sourceScope} → ${targetScope} with content filtering`);
 
     // Get directories and adapters for source and target scopes
     const sourceDir = this.scopeResolver.getScopeDirectory(sourceScope);
@@ -311,11 +332,11 @@ export class MigrationManager {
       );
 
       progress.totalItems = filteredItemIds.length;
-      console.log(`Filtered ${progress.totalItems} items matching criteria from ${Object.keys(sourceCatalog).length} total items`);
+      log(`Filtered ${progress.totalItems} items matching criteria from ${Object.keys(sourceCatalog).length} total items`);
 
       if (dryRun) {
-        console.log(`DRY RUN: Would migrate ${progress.totalItems} filtered items from ${sourceScope} to ${targetScope}`);
-        console.log('Filtered item IDs:', filteredItemIds.slice(0, 10), filteredItemIds.length > 10 ? `... and ${filteredItemIds.length - 10} more` : '');
+        log(`DRY RUN: Would migrate ${progress.totalItems} filtered items from ${sourceScope} to ${targetScope}`);
+        log('Filtered item IDs:', filteredItemIds.slice(0, 10), filteredItemIds.length > 10 ? `... and ${filteredItemIds.length - 10} more` : '');
         return {
           success: true,
           sourceItems: progress.totalItems,
@@ -382,7 +403,7 @@ export class MigrationManager {
       progress.estimatedCompletion = new Date();
       onProgress?.(progress);
 
-      console.log(`Scope migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
+      log(`Scope migration completed: ${progress.itemsProcessed}/${progress.totalItems} items, ${progress.errors.length} errors`);
 
       return validationResult;
 
@@ -511,7 +532,7 @@ export class MigrationManager {
       backupAdapter.writeConfig(config);
     }
 
-    console.log(`Backup created at: ${backupDir}`);
+    log(`Backup created at: ${backupDir}`);
     return backupDir;
   }
 

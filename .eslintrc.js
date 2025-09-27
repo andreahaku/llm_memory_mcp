@@ -14,6 +14,15 @@ module.exports = {
     node: true,
     es2022: true,
   },
+  ignorePatterns: [
+    'src/video/**/*',
+    'src/cli/**/*',
+    'benchmarks/**/*',
+    'dist/**/*',
+    'node_modules/**/*',
+    '**/*.test.ts',
+    'test-*.js'
+  ],
   rules: {
     'no-unused-vars': 'off',
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],

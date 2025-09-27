@@ -2,7 +2,6 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
-import { Readable } from 'stream';
 import type { QRFrame } from '../qr/QRManager.js';
 import type {
   VideoEncoder,
@@ -392,7 +391,7 @@ export class NativeFFmpegEncoder implements VideoEncoder {
         return;
       }
 
-      let frameIndex = 0;
+      const frameIndex = 0;
       let encodingComplete = false;
       let stdinError: Error | null = null;
       let ffmpegStderr = '';

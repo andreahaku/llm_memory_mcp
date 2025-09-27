@@ -1603,4 +1603,78 @@ export class MemoryManager {
       source: { scope: result.scope, ids: items.map(i => i.id) },
     };
   }
+
+  /**
+   * Gracefully dispose of all resources and cleanup timers, watchers, and storage adapters.
+   * This method ensures proper resource cleanup during server shutdown.
+   */
+  async dispose(): Promise<void> {
+    log('Starting MemoryManager cleanup...');
+
+    try {
+      // Clear all compaction timers
+      for (const [scope, timer] of Object.entries(this.compactionIntervals)) {
+        if (timer) {
+          clearInterval(timer);
+          delete this.compactionIntervals[scope as MemoryScope];
+        }
+      }
+
+      // Clear all snapshot timers
+      for (const [scope, timer] of Object.entries(this.snapshotIntervals)) {
+        if (timer) {
+          clearInterval(timer);
+          delete this.snapshotIntervals[scope as MemoryScope];
+        }
+      }
+
+      // Clear all index update timers
+      for (const [scope, timer] of Object.entries(this.indexTimers)) {
+        if (timer) {
+          clearTimeout(timer);
+          delete this.indexTimers[scope as MemoryScope];
+        }
+      }
+
+      // Clear all config debounce timers
+      for (const [scope, timer] of Object.entries(this.configDebounce)) {
+        if (timer) {
+          clearTimeout(timer);
+          delete this.configDebounce[scope as MemoryScope];
+        }
+      }
+
+      // Close all file watchers
+      for (const [scope, watcher] of Object.entries(this.configWatchers)) {
+        if (watcher) {
+          watcher.close();
+          delete this.configWatchers[scope as MemoryScope];
+        }
+      }
+
+      // Dispose of all storage adapters
+      for (const [scope, store] of Object.entries(this.stores)) {
+        if (store && typeof store.destroy === 'function') {
+          try {
+            await store.destroy();
+          } catch (error) {
+            log(`Warning: Failed to dispose storage adapter for ${scope}:`, error);
+          }
+        }
+      }
+
+      // Clear all collections
+      this.stores = {};
+      this.indexers = {};
+      this.vectorIdx = {};
+      this.queryCache.clear();
+      this.indexUpserts = {};
+      this.indexDeletes = {};
+
+      log('MemoryManager cleanup completed successfully');
+    } catch (error) {
+      log('Error during MemoryManager cleanup:', error);
+      throw error;
+    }
+  }
 }

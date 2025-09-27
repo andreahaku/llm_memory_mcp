@@ -1,5 +1,5 @@
-import { QRDecoder, DecodedQRResult, ReconstructionResult, BatchDecodingOptions } from '../qr/QRDecoder.js';
-import { FrameExtractor, ImageDataLike, FrameExtractionOptions } from './FrameExtractor.js';
+import { QRDecoder, DecodedQRResult, BatchDecodingOptions } from '../qr/QRDecoder.js';
+import { FrameExtractor, ImageDataLike } from './FrameExtractor.js';
 import type { MemoryItem } from '../types/Memory.js';
 import * as zlib from 'zlib';
 
@@ -100,7 +100,6 @@ export class VideoDecoder {
     const startTime = Date.now();
     const {
       extractionTimeoutMs = 10000,
-      qrTimeoutMs = 5000,
       highQualityScaling = false
     } = options;
 
@@ -306,7 +305,7 @@ export class VideoDecoder {
         maxConcurrency,
         timeoutMs: options.qrTimeoutMs || 5000,
         skipInvalidFrames,
-        progressCallback: progressCallback ? (processed, total) => {
+        progressCallback: progressCallback ? (processed, _total) => {
           progressCallback(processed, frameIndices.length);
         } : undefined
       };

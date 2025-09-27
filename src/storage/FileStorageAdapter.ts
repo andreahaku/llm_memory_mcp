@@ -1,8 +1,12 @@
 import { FileStore } from './fileStore.js';
-import type { StorageAdapter, WriteResult, GetResult, StorageStats, CompactionStats } from './StorageAdapter.js';
+import type { StorageAdapter, StorageStats } from './StorageAdapter.js';
 import type { MemoryItem, MemoryItemSummary, MemoryConfig, MemoryScope } from '../types/Memory.js';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
+
+function log(message: string, ...args: any[]) {
+  console.error(`[FileStorageAdapter] ${new Date().toISOString()} ${message}`, ...args);
+}
 
 /**
  * FileStorageAdapter wraps the existing FileStore to implement the StorageAdapter interface
@@ -60,7 +64,7 @@ export class FileStorageAdapter implements StorageAdapter {
 
     // If catalog is empty but items exist, rebuild it from items directory
     if (Object.keys(catalog).length === 0) {
-      console.log('📝 Catalog is empty, checking if items exist...');
+      log('📝 Catalog is empty, checking if items exist...');
       try {
         // Check if items directory has any JSON files
         const itemsDir = path.join(this.directory, 'items');
@@ -68,13 +72,13 @@ export class FileStorageAdapter implements StorageAdapter {
         if (existsSync(itemsDir)) {
           const files = readdirSync(itemsDir).filter((f: string) => f.endsWith('.json'));
           if (files.length > 0) {
-            console.log(`🔧 Found ${files.length} items without catalog, rebuilding...`);
+            log(`🔧 Found ${files.length} items without catalog, rebuilding...`);
             try {
               this.fileStore.rebuildCatalog();
               return this.fileStore.readCatalog(); // Re-read after rebuild
             } catch (error) {
               if (error instanceof Error && error.message.includes('Lock')) {
-                console.log('📝 Catalog rebuild in progress by another process, returning empty catalog');
+                log('📝 Catalog rebuild in progress by another process, returning empty catalog');
                 return catalog; // Return empty catalog if lock is held
               }
               throw error; // Re-throw other errors
@@ -171,7 +175,7 @@ export class FileStorageAdapter implements StorageAdapter {
     return result;
   }
 
-  async getByHash(hashes: string[]): Promise<Record<string, any>> {
+  async getByHash(_hashes: string[]): Promise<Record<string, any>> {
     // FileStore doesn't implement content-hash addressing yet
     // Return empty for now - this will be implemented when needed
     return {};
@@ -229,7 +233,7 @@ export class FileStorageAdapter implements StorageAdapter {
 export class FileStorageAdapterFactory {
   readonly type = 'file';
 
-  create(directory: string, scope: MemoryScope): StorageAdapter {
+  create(directory: string, _scope: MemoryScope): StorageAdapter {
     return new FileStorageAdapter(directory);
   }
 }

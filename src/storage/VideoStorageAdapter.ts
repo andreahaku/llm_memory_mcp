@@ -9,6 +9,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
+function log(message: string, ...args: any[]) {
+  console.error(`[VideoStorageAdapter] ${new Date().toISOString()} ${message}`, ...args);
+}
+
 let QRManager: any = null;
 let createOptimalEncoder: any = null;
 let createVideoDecoderFactory: (() => Promise<any>) | null = null;
@@ -492,7 +496,7 @@ export class VideoStorageAdapter implements StorageAdapter {
       this.catalog[normalized.id] = this.buildSummary(normalized, existingEntry);
       this.saveCatalog();
       // Notify index updaters even for existing items to ensure search index is current
-      console.log(`Notifying index updaters about existing item ${normalized.id}`);
+      log(`Notifying index updaters about existing item ${normalized.id}`);
       this.notifyIndexUpdaters([normalized], []);
       return;
     }
@@ -613,7 +617,7 @@ export class VideoStorageAdapter implements StorageAdapter {
     await this.flushPendingChanges();
 
     // Notify index updaters about the deletion after consolidation
-    console.log(`Notifying index updaters about deletion of ${id}`);
+    log(`Notifying index updaters about deletion of ${id}`);
     this.notifyIndexUpdaters([], [id]);
 
     return true;
@@ -817,18 +821,18 @@ export class VideoStorageAdapter implements StorageAdapter {
   }
 
   // Journal operations (not directly applicable to video storage)
-  async readJournal(limit?: number): Promise<any[]> {
+  async readJournal(_limit?: number): Promise<any[]> {
     // Video storage doesn't use a traditional journal
     // Return empty array for compatibility
     return [];
   }
 
-  async readJournalSince(sinceTs?: string): Promise<any[]> {
+  async readJournalSince(_sinceTs?: string): Promise<any[]> {
     // Video storage doesn't use a traditional journal
     return [];
   }
 
-  replaceJournal(entries: any[]): void {
+  replaceJournal(_entries: any[]): void {
     // Video storage doesn't use a traditional journal
     // No-op for compatibility
   }
@@ -1196,7 +1200,7 @@ export class VideoStorageAdapter implements StorageAdapter {
       return null;
     }
 
-    console.log(`getSerializedPayload: Decoding ${frameIndices.length} frames [${entry.frameStart}-${entry.frameEnd}] for item ${expectedItemId || 'unknown'}`);
+    log(`getSerializedPayload: Decoding ${frameIndices.length} frames [${entry.frameStart}-${entry.frameEnd}] for item ${expectedItemId || 'unknown'}`);
 
     try {
       let serializedContent: string | null = null;
@@ -1276,7 +1280,7 @@ export class VideoStorageAdapter implements StorageAdapter {
       const buffer = Buffer.from(serializedContent);
       this.payloadCache.set(entry.contentHash, buffer);
 
-      console.log(`getSerializedPayload: Successfully decoded and cached ${buffer.length} bytes for ${expectedItemId || 'unknown'}`);
+      log(`getSerializedPayload: Successfully decoded and cached ${buffer.length} bytes for ${expectedItemId || 'unknown'}`);
       return buffer;
 
     } catch (error) {
@@ -1387,7 +1391,7 @@ export class VideoStorageAdapter implements StorageAdapter {
 
     // Notify index updaters about all the items that were processed
     const allItems = records.map(r => r.item);
-    console.log(`Notifying index updaters about ${allItems.length} items`);
+    log(`Notifying index updaters about ${allItems.length} items`);
     this.notifyIndexUpdaters(allItems, []);
 
     // Check if compaction should be triggered
@@ -1474,19 +1478,19 @@ export class VideoStorageAdapter implements StorageAdapter {
   }
 
   private async attemptItemRecovery(itemId: string): Promise<MemoryItem | null> {
-    console.log(`attemptItemRecovery: Attempting to recover item ${itemId}`);
+    log(`attemptItemRecovery: Attempting to recover item ${itemId}`);
 
     try {
       // Check if item exists in pending items
       if (this.pendingItems.has(itemId)) {
-        console.log(`attemptItemRecovery: Found ${itemId} in pending items`);
+        log(`attemptItemRecovery: Found ${itemId} in pending items`);
         return this.pendingItems.get(itemId)!.item;
       }
 
       // Check if we can find the item by scanning all frame ranges
       const entry = this.index.items[itemId];
       if (!entry) {
-        console.log(`attemptItemRecovery: No index entry found for ${itemId}`);
+        log(`attemptItemRecovery: No index entry found for ${itemId}`);
         return null;
       }
 
@@ -1508,7 +1512,7 @@ export class VideoStorageAdapter implements StorageAdapter {
           });
 
           if (result.success && result.memoryItem) {
-            console.log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient decoding`);
+            log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient decoding`);
             return this.normalizeItem(result.memoryItem);
           }
         } else {
@@ -1519,13 +1523,13 @@ export class VideoStorageAdapter implements StorageAdapter {
           });
 
           if (result.success && result.results && result.results.length > 0 && result.results[0].memoryItem) {
-            console.log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient multi-frame decoding`);
+            log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient multi-frame decoding`);
             return this.normalizeItem(result.results[0].memoryItem);
           }
         }
       }
 
-      console.log(`attemptItemRecovery: Failed to recover item ${itemId}`);
+      log(`attemptItemRecovery: Failed to recover item ${itemId}`);
       return null;
     } catch (error) {
       console.error(`attemptItemRecovery: Error during recovery of ${itemId}:`, error);

@@ -37,6 +37,7 @@ class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
   private migration: any;
+  private isShuttingDown = false;
 
   constructor() {
     this.server = new Server(
@@ -50,6 +51,7 @@ class LLMKnowledgeBaseServer {
     this.memory = new MemoryManager();
     this.migration = null; // Will be initialized on first use if available
     this.setupServerEventLogging();
+    this.setupGracefulShutdown();
     this.setupHandlers();
 
     // Check video capabilities in background (don't block startup)
@@ -77,6 +79,49 @@ class LLMKnowledgeBaseServer {
     this.server.onerror = (error: Error) => {
       log(`🚨 MCP server error: ${error.message}`);
     };
+  }
+
+  private setupGracefulShutdown(): void {
+    const shutdown = async (signal: string) => {
+      if (this.isShuttingDown) return;
+      this.isShuttingDown = true;
+
+      log(`🛑 Received ${signal}, starting graceful shutdown...`);
+
+      try {
+        // Cleanup MemoryManager resources
+        if (this.memory && typeof this.memory.dispose === 'function') {
+          await this.memory.dispose();
+        }
+
+        // Cleanup migration manager if initialized
+        if (this.migration && typeof this.migration.dispose === 'function') {
+          await this.migration.dispose();
+        }
+
+        log('✅ Graceful shutdown completed');
+        process.exit(0);
+      } catch (error) {
+        log(`❌ Error during shutdown: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGUSR2', () => shutdown('SIGUSR2')); // For nodemon
+
+    // Handle uncaught exceptions and promise rejections
+    process.on('uncaughtException', (error) => {
+      log(`💥 Uncaught exception: ${error.message}`);
+      log('Stack trace:', error.stack);
+      shutdown('uncaughtException');
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+      log(`💥 Unhandled rejection at:`, promise, 'reason:', reason);
+      shutdown('unhandledRejection');
+    });
   }
 
   private async checkVideoCapabilities(): Promise<void> {
@@ -135,7 +180,7 @@ class LLMKnowledgeBaseServer {
       const MigrationManagerClass = await loadMigrationManager();
       if (MigrationManagerClass) {
         this.migration = new MigrationManagerClass();
-        console.log('[LLM-Memory] 🎬 Migration tools initialized - video and file backends available');
+        log('🎬 Migration tools initialized - video and file backends available');
       }
     }
     return this.migration;

@@ -12,6 +12,10 @@ import {
   isNativeEncoderSupported,
 } from './NativeEncoder.js';
 
+function log(message: string, ...args: any[]) {
+  console.error(`[VideoUtils] ${new Date().toISOString()} ${message}`, ...args);
+}
+
 // Dynamic import for WASM to avoid startup dependency issues
 let WasmFFmpegEncoder: any = null;
 let isWasmEncoderSupported: any = null;
@@ -162,7 +166,7 @@ export async function createOptimalEncoder(): Promise<VideoEncoder> {
   try {
     const nativeEncoder = new NativeFFmpegEncoder();
     await nativeEncoder.initialize();
-    console.log('Using native FFmpeg encoder');
+    log('Using native FFmpeg encoder');
     return nativeEncoder;
   } catch (nativeError) {
     console.warn('Native FFmpeg encoder failed:', nativeError);
@@ -174,7 +178,7 @@ export async function createOptimalEncoder(): Promise<VideoEncoder> {
     if (wasmLoaded && WasmFFmpegEncoder) {
       const wasmEncoder = new WasmFFmpegEncoder();
       await wasmEncoder.initialize();
-      console.log('Using WASM FFmpeg encoder');
+      log('Using WASM FFmpeg encoder');
       return wasmEncoder;
     } else {
       console.warn('WASM encoder could not be loaded');
