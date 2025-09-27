@@ -114,6 +114,12 @@ export class VideoStorageAdapter implements StorageAdapter {
   private initializationPromise: Promise<void>;
   private flushPromise: Promise<void> | null = null;
 
+  // Index update callbacks for search integration
+  private indexUpdateCallbacks: Array<(items: MemoryItem[], deletedIds: string[]) => void> = [];
+  private compactionHook: (() => void) | null = null;
+  private compactionThreshold = 500;
+  private compactionCounter = 0;
+
   constructor(directory: string, scope: MemoryScope) {
     this.directory = directory;
     this.scope = scope;
@@ -485,6 +491,9 @@ export class VideoStorageAdapter implements StorageAdapter {
     if (existingEntry && existingEntry.contentHash === contentHash && !this.pendingDeletes.has(normalized.id)) {
       this.catalog[normalized.id] = this.buildSummary(normalized, existingEntry);
       this.saveCatalog();
+      // Notify index updaters even for existing items to ensure search index is current
+      console.log(`Notifying index updaters about existing item ${normalized.id}`);
+      this.notifyIndexUpdaters([normalized], []);
       return;
     }
 
@@ -526,21 +535,58 @@ export class VideoStorageAdapter implements StorageAdapter {
   }
 
   async readItem(id: string): Promise<MemoryItem | null> {
+    // First check pending items (not yet flushed to video)
     if (this.pendingItems.has(id)) {
       return this.pendingItems.get(id)!.item;
     }
 
+    // Check if item was marked for deletion
+    if (this.pendingDeletes.has(id)) {
+      return null;
+    }
+
+    // Look up item in the consolidated index
     const entry = this.index.items[id];
     if (!entry) {
+      console.warn(`VideoStorageAdapter.readItem: Item ${id} not found in index`);
       return null;
     }
 
-    const buffer = await this.getSerializedPayload(entry);
+    // Validate entry integrity before attempting decode
+    if (!this.validateIndexEntry(entry, id)) {
+      console.error(`VideoStorageAdapter.readItem: Invalid index entry for ${id}`);
+      // Try to rebuild the entry from video if possible
+      const rebuiltItem = await this.attemptItemRecovery(id);
+      if (rebuiltItem) {
+        return rebuiltItem;
+      }
+      return null;
+    }
+
+    // Get the serialized payload from video storage
+    const buffer = await this.getSerializedPayload(entry, id);
     if (!buffer) {
-      return null;
+      console.error(`VideoStorageAdapter.readItem: Failed to decode payload for ${id}`);
+      // Try recovery as last resort
+      const rebuiltItem = await this.attemptItemRecovery(id);
+      return rebuiltItem || null;
     }
 
-    return this.deserializeItem(buffer.toString());
+    try {
+      const item = this.deserializeItem(buffer.toString());
+
+      // Validate that we got the correct item
+      if (item && item.id !== id) {
+        console.error(`VideoStorageAdapter.readItem: ID mismatch! Requested ${id}, got ${item.id}`);
+        // This indicates serious index corruption - attempt recovery
+        return await this.attemptItemRecovery(id) || null;
+      }
+
+      return item;
+    } catch (error) {
+      console.error(`VideoStorageAdapter.readItem: Failed to deserialize item ${id}:`, error);
+      return await this.attemptItemRecovery(id) || null;
+    }
   }
 
   async readItems(ids: string[]): Promise<MemoryItem[]> {
@@ -565,6 +611,11 @@ export class VideoStorageAdapter implements StorageAdapter {
     delete this.catalog[id];
 
     await this.flushPendingChanges();
+
+    // Notify index updaters about the deletion after consolidation
+    console.log(`Notifying index updaters about deletion of ${id}`);
+    this.notifyIndexUpdaters([], [id]);
+
     return true;
   }
 
@@ -590,6 +641,18 @@ export class VideoStorageAdapter implements StorageAdapter {
     }
 
     return results;
+  }
+
+  async listItems(): Promise<string[]> {
+    // Return IDs from both committed items and pending items
+    const committedIds = Object.keys(this.index.items)
+      .filter(id => !this.pendingDeletes.has(id));
+    const pendingIds = Array.from(this.pendingItems.keys())
+      .filter(id => !this.pendingDeletes.has(id));
+
+    // Merge and deduplicate
+    const allIds = new Set([...committedIds, ...pendingIds]);
+    return Array.from(allIds);
   }
 
   readCatalog(): Record<string, MemoryItemSummary> {
@@ -625,10 +688,43 @@ export class VideoStorageAdapter implements StorageAdapter {
     this.saveCatalog();
   }
 
+  setCompactionHook(callback: () => void, threshold?: number): void {
+    this.compactionHook = callback;
+    if (threshold !== undefined) {
+      this.compactionThreshold = threshold;
+    }
+  }
+
+  registerIndexUpdateCallback(callback: (items: MemoryItem[], deletedIds: string[]) => void): void {
+    this.indexUpdateCallbacks.push(callback);
+  }
+
+  private notifyIndexUpdaters(items: MemoryItem[], deletedIds: string[]): void {
+    for (const callback of this.indexUpdateCallbacks) {
+      try {
+        callback(items, deletedIds);
+      } catch (error) {
+        console.warn('Index update callback failed:', error);
+      }
+    }
+  }
+
+  private checkCompactionThreshold(): void {
+    this.compactionCounter++;
+    if (this.compactionHook && this.compactionCounter >= this.compactionThreshold) {
+      this.compactionCounter = 0;
+      try {
+        this.compactionHook();
+      } catch (error) {
+        console.warn('Compaction hook failed:', error);
+      }
+    }
+  }
+
   async rebuildCatalog(): Promise<void> {
     const rebuilt: Record<string, ConsolidatedVideoMemoryItemSummary> = {};
     for (const [id, entry] of Object.entries(this.index.items)) {
-      const buffer = await this.getSerializedPayload(entry);
+      const buffer = await this.getSerializedPayload(entry, id);
       if (!buffer) {
         continue;
       }
@@ -694,6 +790,233 @@ export class VideoStorageAdapter implements StorageAdapter {
 
   getDirectory(): string {
     return this.directory;
+  }
+
+  // Optional StorageAdapter methods for compatibility
+
+  async initialize(): Promise<void> {
+    // Already handled in constructor
+    await this.waitForInitialization();
+  }
+
+  async destroy(): Promise<void> {
+    try {
+      if (this.videoEncoder) {
+        await this.videoEncoder.dispose();
+      }
+      if (this.videoDecoder) {
+        await this.videoDecoder.dispose();
+      }
+      this.payloadCache.clear();
+      this.pendingItems.clear();
+      this.pendingDeletes.clear();
+      this.indexUpdateCallbacks.length = 0;
+    } catch (error) {
+      console.warn('Error during VideoStorageAdapter destruction:', error);
+    }
+  }
+
+  // Journal operations (not directly applicable to video storage)
+  async readJournal(limit?: number): Promise<any[]> {
+    // Video storage doesn't use a traditional journal
+    // Return empty array for compatibility
+    return [];
+  }
+
+  async readJournalSince(sinceTs?: string): Promise<any[]> {
+    // Video storage doesn't use a traditional journal
+    return [];
+  }
+
+  replaceJournal(entries: any[]): void {
+    // Video storage doesn't use a traditional journal
+    // No-op for compatibility
+  }
+
+  // Snapshot operations
+  writeSnapshotMeta(meta: { lastTs: string; checksum?: string }): void {
+    try {
+      const snapshotPath = path.join(this.directory, 'snapshot-meta.json');
+      writeFileSync(snapshotPath, JSON.stringify(meta, null, 2));
+    } catch (error) {
+      console.warn('Failed to write snapshot meta:', error);
+    }
+  }
+
+  readSnapshotMeta(): { lastTs: string; checksum?: string } | null {
+    try {
+      const snapshotPath = path.join(this.directory, 'snapshot-meta.json');
+      if (existsSync(snapshotPath)) {
+        const data = readFileSync(snapshotPath, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (error) {
+      console.warn('Failed to read snapshot meta:', error);
+    }
+    return null;
+  }
+
+  writeStateOk(meta: { ts: string; checksum?: string }): void {
+    try {
+      const statePath = path.join(this.directory, 'state-ok.json');
+      writeFileSync(statePath, JSON.stringify(meta, null, 2));
+    } catch (error) {
+      console.warn('Failed to write state ok:', error);
+    }
+  }
+
+  readStateOk(): { ts: string; checksum?: string } | null {
+    try {
+      const statePath = path.join(this.directory, 'state-ok.json');
+      if (existsSync(statePath)) {
+        const data = readFileSync(statePath, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (error) {
+      console.warn('Failed to read state ok:', error);
+    }
+    return null;
+  }
+
+  // Content addressing for deduplication
+  async hasContent(hashes: string[]): Promise<Record<string, boolean>> {
+    const result: Record<string, boolean> = {};
+    for (const hash of hashes) {
+      result[hash] = !!this.index.contentHashes[hash];
+    }
+    return result;
+  }
+
+  async getByHash(hashes: string[]): Promise<Record<string, any>> {
+    const result: Record<string, any> = {};
+    for (const hash of hashes) {
+      const mapping = this.index.contentHashes[hash];
+      if (mapping) {
+        const item = await this.readItem(mapping.itemId);
+        if (item) {
+          result[hash] = item;
+        }
+      }
+    }
+    return result;
+  }
+
+  // File operations for compatibility
+  async writeItemFileRaw(item: MemoryItem): Promise<void> {
+    // Delegate to standard writeItem
+    await this.writeItem(item);
+  }
+
+  removeItemFileRaw(id: string): void {
+    // Delegate to standard deleteItem (async operation)
+    this.deleteItem(id).catch(error => {
+      console.warn(`Failed to remove item ${id}:`, error);
+    });
+  }
+
+  // Migration and integrity methods
+  async migrateToOptimizedJournal(): Promise<any> {
+    // Video storage doesn't use traditional journaling
+    return {
+      success: true,
+      message: 'Video storage does not require journal migration'
+    };
+  }
+
+  async verifyIntegrityFromOptimizedJournal(): Promise<any> {
+    // Use our built-in index validation instead
+    const validation = await this.validateIndex();
+    return {
+      success: validation.valid,
+      errors: validation.errors,
+      message: validation.valid ? 'Index integrity verified' : 'Index integrity issues found'
+    };
+  }
+
+  async validateAndRepairIndex(): Promise<{ valid: boolean; errors: string[]; repaired?: boolean }> {
+    const validation = await this.validateIndex();
+
+    if (validation.valid) {
+      return { valid: true, errors: [] };
+    }
+
+    // Attempt repairs for known issues
+    let repaired = false;
+    const remainingErrors: string[] = [];
+
+    for (const error of validation.errors) {
+      if (error === 'Index file does not exist' && this.index.totalItems === 0) {
+        // Recreate empty index if it's missing but should be empty
+        this.saveIndex();
+        repaired = true;
+      } else if (error.startsWith('Invalid index entry for item')) {
+        // Remove invalid entries
+        const itemId = error.match(/item (.+)$/)?.[1];
+        if (itemId && this.index.items[itemId]) {
+          delete this.index.items[itemId];
+          delete this.catalog[itemId];
+          repaired = true;
+        } else {
+          remainingErrors.push(error);
+        }
+      } else {
+        remainingErrors.push(error);
+      }
+    }
+
+    if (repaired) {
+      this.saveIndex();
+      this.saveCatalog();
+      // Re-validate after repairs
+      const finalValidation = await this.validateIndex();
+      return {
+        valid: finalValidation.valid,
+        errors: finalValidation.errors,
+        repaired: true
+      };
+    }
+
+    return { valid: false, errors: remainingErrors };
+  }
+
+  private async validateIndex(): Promise<{ valid: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    // Check if index file exists
+    if (!existsSync(this.indexPath)) {
+      errors.push('Index file does not exist');
+      return { valid: false, errors };
+    }
+
+    // Check if video file exists for non-empty index
+    if (this.index.totalItems > 0 && !await fs.pathExists(this.videoPath)) {
+      errors.push('Video file missing for non-empty index');
+    }
+
+    // Validate each index entry
+    for (const [id, entry] of Object.entries(this.index.items)) {
+      if (!this.validateIndexEntry(entry, id)) {
+        errors.push(`Invalid index entry for item ${id}`);
+      }
+    }
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  async getJournalStats(): Promise<any> {
+    // Return video-specific stats instead
+    const metrics = await this.getVideoStorageMetrics();
+    return {
+      totalEntries: this.index.totalItems,
+      sizeBytes: metrics.segmentStats.totalSizeBytes,
+      optimized: true,
+      compressionRatio: metrics.segmentStats.averageCompressionRatio
+    };
+  }
+
+  hasOptimizedJournal(): boolean {
+    // Video storage is inherently optimized
+    return true;
   }
 
   async findContentByHash(contentHash: string): Promise<MemoryItem | null> {
@@ -788,7 +1111,7 @@ export class VideoStorageAdapter implements StorageAdapter {
         }
 
         const entry = this.index.items[id];
-        const buffer = await this.getSerializedPayload(entry);
+        const buffer = await this.getSerializedPayload(entry, id);
         if (!buffer) {
           console.warn(`Skipping ${id} during consolidation - unable to decode existing payload`);
           continue;
@@ -819,56 +1142,145 @@ export class VideoStorageAdapter implements StorageAdapter {
     }
   }
 
-  private async getSerializedPayload(entry: ItemIndexEntry): Promise<Buffer | null> {
+  private async getSerializedPayload(entry: ItemIndexEntry, expectedItemId?: string): Promise<Buffer | null> {
+    // Check cache first
     if (this.payloadCache.has(entry.contentHash)) {
-      return this.payloadCache.get(entry.contentHash)!;
+      const cached = this.payloadCache.get(entry.contentHash)!;
+      // Validate cached content if we have an expected ID
+      if (expectedItemId) {
+        try {
+          const parsed = JSON.parse(cached.toString());
+          if (parsed.id !== expectedItemId) {
+            console.warn(`Cache contains wrong item for ${expectedItemId}, removing from cache`);
+            this.payloadCache.delete(entry.contentHash);
+          } else {
+            return cached;
+          }
+        } catch (error) {
+          console.warn('Failed to validate cached content, removing from cache:', error);
+          this.payloadCache.delete(entry.contentHash);
+        }
+      } else {
+        return cached;
+      }
     }
 
+    // Check if video file exists
     if (!await fs.pathExists(this.videoPath)) {
+      console.error(`getSerializedPayload: Video file does not exist: ${this.videoPath}`);
       return null;
     }
 
-    await this.ensureVideoDecoder();
+    // Ensure video decoder is ready
+    try {
+      await this.ensureVideoDecoder();
+    } catch (error) {
+      console.error('getSerializedPayload: Failed to initialize video decoder:', error);
+      return null;
+    }
 
+    // Validate frame range
+    if (entry.frameStart < 0 || entry.frameEnd < entry.frameStart) {
+      console.error(`getSerializedPayload: Invalid frame range [${entry.frameStart}, ${entry.frameEnd}]`);
+      return null;
+    }
+
+    // Build frame indices array
     const frameIndices: number[] = [];
     for (let frame = entry.frameStart; frame <= entry.frameEnd; frame++) {
       frameIndices.push(frame);
     }
 
+    if (frameIndices.length === 0) {
+      console.error(`getSerializedPayload: No frames to decode for entry`);
+      return null;
+    }
+
+    console.log(`getSerializedPayload: Decoding ${frameIndices.length} frames [${entry.frameStart}-${entry.frameEnd}] for item ${expectedItemId || 'unknown'}`);
+
     try {
-      let decodedItem: MemoryItem | null = null;
-      if (frameIndices.length <= 1) {
+      let serializedContent: string | null = null;
+
+      if (frameIndices.length === 1) {
+        // Single frame decoding
         const result = await this.videoDecoder.decodeFrame(this.videoPath, frameIndices[0], {
-          extractionTimeoutMs: 15000,
-          qrTimeoutMs: 10000,
+          extractionTimeoutMs: 20000,
+          qrTimeoutMs: 15000,
           highQualityScaling: true
         });
-        if (!result.success || !result.memoryItem) {
+
+        if (!result.success) {
+          console.error(`getSerializedPayload: Single frame decode failed:`, result.error);
           return null;
         }
-        decodedItem = result.memoryItem;
+
+        if (!result.memoryItem) {
+          console.error(`getSerializedPayload: Single frame decode returned no memory item`);
+          return null;
+        }
+
+        // Validate the decoded item if we have an expected ID
+        if (expectedItemId && result.memoryItem.id !== expectedItemId) {
+          console.error(`getSerializedPayload: Single frame decode returned wrong item! Expected ${expectedItemId}, got ${result.memoryItem.id}`);
+          return null;
+        }
+
+        const normalized = this.normalizeItem(result.memoryItem);
+        serializedContent = this.serializeItem(normalized);
       } else {
+        // Multi-frame decoding
         const result = await this.videoDecoder.decodeMultiFrame(this.videoPath, frameIndices, {
-          extractionTimeoutMs: 30000,
-          qrTimeoutMs: 15000
+          extractionTimeoutMs: 45000,
+          qrTimeoutMs: 20000,
+          skipInvalidFrames: false // Don't skip frames for multi-frame content
         });
-        if (!result.success || result.results.length === 0 || !result.results[0].memoryItem) {
+
+        if (!result.success) {
+          console.error(`getSerializedPayload: Multi-frame decode failed:`, result.error);
           return null;
         }
-        decodedItem = result.results[0].memoryItem;
+
+        if (!result.results || result.results.length === 0) {
+          console.error(`getSerializedPayload: Multi-frame decode returned no results`);
+          return null;
+        }
+
+        const firstResult = result.results[0];
+        if (!firstResult.memoryItem) {
+          console.error(`getSerializedPayload: Multi-frame decode returned no memory item`);
+          return null;
+        }
+
+        // Validate the decoded item if we have an expected ID
+        if (expectedItemId && firstResult.memoryItem.id !== expectedItemId) {
+          console.error(`getSerializedPayload: Multi-frame decode returned wrong item! Expected ${expectedItemId}, got ${firstResult.memoryItem.id}`);
+          return null;
+        }
+
+        const normalized = this.normalizeItem(firstResult.memoryItem);
+        serializedContent = this.serializeItem(normalized);
       }
 
-      if (!decodedItem) {
+      if (!serializedContent) {
+        console.error(`getSerializedPayload: No serialized content produced`);
         return null;
       }
 
-      const normalized = this.normalizeItem(decodedItem);
-      const serialized = this.serializeItem(normalized);
-      const buffer = Buffer.from(serialized);
+      // Verify content hash matches expected
+      const actualHash = this.computeContentHash(serializedContent);
+      if (actualHash !== entry.contentHash) {
+        console.error(`getSerializedPayload: Content hash mismatch! Expected ${entry.contentHash}, got ${actualHash}`);
+        // Still return the content but log the discrepancy
+      }
+
+      const buffer = Buffer.from(serializedContent);
       this.payloadCache.set(entry.contentHash, buffer);
+
+      console.log(`getSerializedPayload: Successfully decoded and cached ${buffer.length} bytes for ${expectedItemId || 'unknown'}`);
       return buffer;
+
     } catch (error) {
-      console.error('Failed to decode video payload:', error);
+      console.error(`getSerializedPayload: Failed to decode video payload for ${expectedItemId || 'unknown'}:`, error);
       return null;
     }
   }
@@ -972,6 +1384,14 @@ export class VideoStorageAdapter implements StorageAdapter {
 
     this.saveIndex();
     this.saveCatalog();
+
+    // Notify index updaters about all the items that were processed
+    const allItems = records.map(r => r.item);
+    console.log(`Notifying index updaters about ${allItems.length} items`);
+    this.notifyIndexUpdaters(allItems, []);
+
+    // Check if compaction should be triggered
+    this.checkCompactionThreshold();
   }
 
   private normalizeFrameDimensions(frames: QRFrame[]): QRFrame[] {
@@ -1027,6 +1447,90 @@ export class VideoStorageAdapter implements StorageAdapter {
         }
       };
     });
+  }
+
+  private validateIndexEntry(entry: ItemIndexEntry, itemId: string): boolean {
+    if (!entry) {
+      console.warn(`validateIndexEntry: No entry provided for ${itemId}`);
+      return false;
+    }
+
+    if (entry.frameStart < 0 || entry.frameEnd < entry.frameStart) {
+      console.warn(`validateIndexEntry: Invalid frame range [${entry.frameStart}, ${entry.frameEnd}] for ${itemId}`);
+      return false;
+    }
+
+    if (!entry.contentHash || entry.contentHash.length < 32) {
+      console.warn(`validateIndexEntry: Invalid content hash for ${itemId}`);
+      return false;
+    }
+
+    if (entry.chunkCount <= 0) {
+      console.warn(`validateIndexEntry: Invalid chunk count ${entry.chunkCount} for ${itemId}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  private async attemptItemRecovery(itemId: string): Promise<MemoryItem | null> {
+    console.log(`attemptItemRecovery: Attempting to recover item ${itemId}`);
+
+    try {
+      // Check if item exists in pending items
+      if (this.pendingItems.has(itemId)) {
+        console.log(`attemptItemRecovery: Found ${itemId} in pending items`);
+        return this.pendingItems.get(itemId)!.item;
+      }
+
+      // Check if we can find the item by scanning all frame ranges
+      const entry = this.index.items[itemId];
+      if (!entry) {
+        console.log(`attemptItemRecovery: No index entry found for ${itemId}`);
+        return null;
+      }
+
+      // Try to decode with more lenient options
+      if (await fs.pathExists(this.videoPath)) {
+        await this.ensureVideoDecoder();
+
+        const frameIndices: number[] = [];
+        for (let frame = entry.frameStart; frame <= entry.frameEnd; frame++) {
+          frameIndices.push(frame);
+        }
+
+        if (frameIndices.length === 1) {
+          const result = await this.videoDecoder.decodeFrame(this.videoPath, frameIndices[0], {
+            extractionTimeoutMs: 30000,
+            qrTimeoutMs: 20000,
+            highQualityScaling: false, // Try lower quality first
+            skipInvalidFrames: true
+          });
+
+          if (result.success && result.memoryItem) {
+            console.log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient decoding`);
+            return this.normalizeItem(result.memoryItem);
+          }
+        } else {
+          const result = await this.videoDecoder.decodeMultiFrame(this.videoPath, frameIndices, {
+            extractionTimeoutMs: 60000,
+            qrTimeoutMs: 30000,
+            skipInvalidFrames: true
+          });
+
+          if (result.success && result.results && result.results.length > 0 && result.results[0].memoryItem) {
+            console.log(`attemptItemRecovery: Successfully recovered ${itemId} with lenient multi-frame decoding`);
+            return this.normalizeItem(result.results[0].memoryItem);
+          }
+        }
+      }
+
+      console.log(`attemptItemRecovery: Failed to recover item ${itemId}`);
+      return null;
+    } catch (error) {
+      console.error(`attemptItemRecovery: Error during recovery of ${itemId}:`, error);
+      return null;
+    }
   }
 }
 

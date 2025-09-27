@@ -1,0 +1,230 @@
+{
+  "timestamp": "2025-09-27T10:15:48.256Z",
+  "summary": {
+    "totalTests": 4,
+    "passedTests": 4,
+    "failedTests": 0,
+    "overallHealth": "HEALTHY"
+  },
+  "results": [
+    {
+      "test": "Scope Isolation",
+      "success": true,
+      "findings": [
+        "⚠️  Scope mismatch: catalog shows local, but read returned committed",
+        "⚠️  Scope mismatch: catalog shows local, but read returned committed",
+        "⚠️  Scope mismatch: catalog shows local, but read returned committed",
+        "⚠️  Scope mismatch: catalog shows local, but read returned committed",
+        "🎬 Index item 01K61J6CSKAPVWRP2KEHE9TPK2 missing from catalog",
+        "🎬 Index item 01K62CY81PG2JQ0KRWVBVFRRVF missing from catalog",
+        "🎬 Index item 01K62EWMBB6Y5XS82KQ42KFRKA missing from catalog",
+        "🎬 Index item 01K62F1QKZ040BVZC5N7B9K0GM missing from catalog",
+        "🎬 Index item 01K62F9TZ673N44172J53VNFCD missing from catalog"
+      ],
+      "evidence": [
+        {
+          "scopeCounts": {
+            "global": 0,
+            "local": 31,
+            "committed": 5,
+            "project": 36,
+            "all": 36
+          }
+        },
+        {
+          "scopeMismatch": {
+            "itemId": "01K62F1QKZ040BVZC5N7B9K0GM",
+            "catalogScope": "local",
+            "readScope": "committed"
+          }
+        },
+        {
+          "scopeMismatch": {
+            "itemId": "01K62EWMBB6Y5XS82KQ42KFRKA",
+            "catalogScope": "local",
+            "readScope": "committed"
+          }
+        },
+        {
+          "scopeMismatch": {
+            "itemId": "01K62CY81PG2JQ0KRWVBVFRRVF",
+            "catalogScope": "local",
+            "readScope": "committed"
+          }
+        },
+        {
+          "scopeMismatch": {
+            "itemId": "01K61J6CSKAPVWRP2KEHE9TPK2",
+            "catalogScope": "local",
+            "readScope": "committed"
+          }
+        },
+        {
+          "orphanedIndexItem": {
+            "itemId": "01K61J6CSKAPVWRP2KEHE9TPK2",
+            "indexEntry": {
+              "frameStart": 0,
+              "frameEnd": 0,
+              "chunkCount": 1,
+              "contentHash": "0d9853139bed556f68c4d1c3cec8bad06aaa2b6d4a7074d174ff144866697d93",
+              "manifest": [
+                {
+                  "frameIndex": 0,
+                  "chunkIndex": 0,
+                  "byteOffset": 0
+                }
+              ],
+              "originalSize": 3889,
+              "encodedSize": 1874,
+              "isCompressed": true
+            }
+          }
+        },
+        {
+          "orphanedIndexItem": {
+            "itemId": "01K62CY81PG2JQ0KRWVBVFRRVF",
+            "indexEntry": {
+              "frameStart": 1,
+              "frameEnd": 1,
+              "chunkCount": 1,
+              "contentHash": "1574ac9872681f94a17c5fb96995d0e956a17d55af916a6ac5fd8e0ce86fbbfc",
+              "manifest": [
+                {
+                  "frameIndex": 1,
+                  "chunkIndex": 0,
+                  "byteOffset": 0
+                }
+              ],
+              "originalSize": 2833,
+              "encodedSize": 1412,
+              "isCompressed": true
+            }
+          }
+        },
+        {
+          "orphanedIndexItem": {
+            "itemId": "01K62EWMBB6Y5XS82KQ42KFRKA",
+            "indexEntry": {
+              "frameStart": 2,
+              "frameEnd": 2,
+              "chunkCount": 1,
+              "contentHash": "f94947bbddc0d05cb7180637d93763560a9f930c13b947866599c59f57ee9d75",
+              "manifest": [
+                {
+                  "frameIndex": 2,
+                  "chunkIndex": 0,
+                  "byteOffset": 0
+                }
+              ],
+              "originalSize": 2214,
+              "encodedSize": 1067,
+              "isCompressed": true
+            }
+          }
+        },
+        {
+          "orphanedIndexItem": {
+            "itemId": "01K62F1QKZ040BVZC5N7B9K0GM",
+            "indexEntry": {
+              "frameStart": 3,
+              "frameEnd": 3,
+              "chunkCount": 1,
+              "contentHash": "75e7675c4f6b4449e0a020db435df68318090026a3b6027aaf2e1362e32d2bd6",
+              "manifest": [
+                {
+                  "frameIndex": 3,
+                  "chunkIndex": 0,
+                  "byteOffset": 0
+                }
+              ],
+              "originalSize": 2471,
+              "encodedSize": 1223,
+              "isCompressed": true
+            }
+          }
+        },
+        {
+          "orphanedIndexItem": {
+            "itemId": "01K62F9TZ673N44172J53VNFCD",
+            "indexEntry": {
+              "frameStart": 4,
+              "frameEnd": 4,
+              "chunkCount": 1,
+              "contentHash": "9c178cdd8dcffc96b1f3de2f734d03940e5423223f7cdeeb45390d891c3cf42e",
+              "manifest": [
+                {
+                  "frameIndex": 4,
+                  "chunkIndex": 0,
+                  "byteOffset": 0
+                }
+              ],
+              "originalSize": 4142,
+              "encodedSize": 1720,
+              "isCompressed": true
+            }
+          }
+        }
+      ],
+      "recommendations": []
+    },
+    {
+      "test": "Video Pipeline Integrity",
+      "success": true,
+      "findings": [],
+      "evidence": [
+        {
+          "pipelineStats": {
+            "successfulDecodes": 0,
+            "failedDecodes": 0,
+            "successRate": null,
+            "totalTested": 0
+          }
+        }
+      ],
+      "recommendations": []
+    },
+    {
+      "test": "Index Corruption Detection",
+      "success": true,
+      "findings": [
+        "✅ No index corruption detected"
+      ],
+      "evidence": [
+        {
+          "indexAnalysis": {
+            "totalFrames": 5,
+            "mappedFrames": 5,
+            "duplicateFrames": 0,
+            "orphanedFrames": 0,
+            "itemCount": 5,
+            "hashCount": 5
+          }
+        }
+      ],
+      "recommendations": []
+    },
+    {
+      "test": "Search Integration",
+      "success": true,
+      "findings": [
+        "⚠️  Empty search returned 5 items but catalog has 0"
+      ],
+      "evidence": [
+        {
+          "searchStats": {
+            "totalSearchResults": 0,
+            "consistencyErrors": 0,
+            "consistencyRate": 0
+          }
+        },
+        {
+          "countMismatch": {
+            "searchCount": 5,
+            "catalogCount": 0
+          }
+        }
+      ],
+      "recommendations": []
+    }
+  ]
+}

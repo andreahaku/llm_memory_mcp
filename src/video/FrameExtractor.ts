@@ -210,7 +210,23 @@ export class FrameExtractor {
           const width = parseInt(videoStream.width) || 0;
           const height = parseInt(videoStream.height) || 0;
           const duration = parseFloat(videoStream.duration) || 0;
-          const fps = eval(videoStream.r_frame_rate) || 30; // Evaluate fraction like "30/1"
+          // Parse frame rate safely (e.g., "30/1" -> 30)
+          let fps = 30; // default fallback
+          if (videoStream.r_frame_rate && typeof videoStream.r_frame_rate === 'string') {
+            const rateParts = videoStream.r_frame_rate.split('/');
+            if (rateParts.length === 2) {
+              const numerator = parseFloat(rateParts[0]);
+              const denominator = parseFloat(rateParts[1]);
+              if (!isNaN(numerator) && !isNaN(denominator) && denominator !== 0) {
+                fps = numerator / denominator;
+              }
+            } else {
+              const singleRate = parseFloat(videoStream.r_frame_rate);
+              if (!isNaN(singleRate)) {
+                fps = singleRate;
+              }
+            }
+          }
 
           resolve({ frameCount, width, height, duration, fps });
         } catch (error) {
@@ -240,7 +256,7 @@ export class FrameExtractor {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const args = this.buildFFmpegExtractionCommand(
+        const args = await this.buildFFmpegExtractionCommand(
           videoPath,
           frameIndex,
           format,
@@ -329,7 +345,7 @@ export class FrameExtractor {
   /**
    * Build optimized FFmpeg command for single frame extraction with fallback modes
    */
-  private buildFFmpegExtractionCommand(
+  private async buildFFmpegExtractionCommand(
     videoPath: string,
     frameIndex: number,
     format: 'rgba' | 'png' | 'raw',
@@ -337,7 +353,7 @@ export class FrameExtractor {
     highQuality: boolean,
     outputPath: string,
     useFallbackMode = false
-  ): string[] {
+  ): Promise<string[]> {
     const args = [
       // Input options for fast seeking
       '-hide_banner',
@@ -352,13 +368,24 @@ export class FrameExtractor {
         '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, true)
       );
     } else {
-      // Fast mode: estimate timestamp for faster seeking
-      args.push(
-        '-ss', `${frameIndex / 30}`, // Estimate timestamp (assumes 30fps)
-        '-i', videoPath,
-        // Normal frame selection
-        '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, false)
-      );
+      // Fast mode: get video info to calculate accurate timestamp
+      try {
+        const videoInfo = await this.getVideoInfo(videoPath);
+        const timestamp = frameIndex / videoInfo.fps;
+        args.push(
+          '-ss', timestamp.toString(),
+          '-i', videoPath,
+          // Normal frame selection
+          '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, false)
+        );
+      } catch (error) {
+        // Fallback to 30fps assumption if video info fails
+        args.push(
+          '-ss', `${frameIndex / 30}`,
+          '-i', videoPath,
+          '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, false)
+        );
+      }
     }
 
     // Common output options
@@ -389,8 +416,10 @@ export class FrameExtractor {
     const filters = [];
 
     if (useFallback) {
-      // Fallback mode: more lenient frame selection
-      filters.push(`select='gte(n\\,${frameIndex})'`);
+      // Fallback mode: more lenient frame selection with range
+      const startFrame = Math.max(0, frameIndex - 1);
+      const endFrame = frameIndex + 1;
+      filters.push(`select='between(n\\,${startFrame}\\,${endFrame})'`);
     } else {
       // Normal mode: precise frame selection
       filters.push(`select='eq(n\\,${frameIndex})'`);

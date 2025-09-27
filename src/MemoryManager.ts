@@ -290,6 +290,31 @@ export class MemoryManager {
       }
 
       this.stores[scope] = store; // set early to avoid recursion
+
+      // Set up search index integration for video storage
+      if (storageBackend === 'video' && 'registerIndexUpdateCallback' in store) {
+        log(`Setting up video storage search index integration for ${scope} scope`);
+        const videoStore = store as any;
+        videoStore.registerIndexUpdateCallback((items: MemoryItem[], deletedIds: string[]) => {
+          log(`Video storage index update callback: ${items.length} items, ${deletedIds.length} deletions`);
+          const indexer = this.getIndexer(scope, cwd);
+          const weights = this.getRanking(scope).fieldWeights as any;
+
+          // Update search index for modified items
+          for (const item of items) {
+            log(`Updating search index for item ${item.id}`);
+            indexer.updateItem(item, weights);
+          }
+
+          // Remove deleted items from search index
+          for (const id of deletedIds) {
+            log(`Removing item ${id} from search index`);
+            indexer.removeItem(id);
+            try { this.getVectorIndex(scope, cwd).remove(id); } catch {}
+          }
+        });
+      }
+
       // Set compaction hook based on scope config (read directly from store)
       const cfg = store.readConfig() || undefined;
       const thr = cfg?.maintenance?.compactEvery || 500;
@@ -486,7 +511,13 @@ export class MemoryManager {
 
     await store.writeItem(item);
     this.queryCache.clear();
-    this.scheduleIndexUpsert(item.scope, item);
+
+    // For non-video storage, schedule traditional index update
+    const currentStorageBackend = this.detectStorageBackend(this.resolver.getScopeDirectory(item.scope));
+    if (currentStorageBackend !== 'video') {
+      this.scheduleIndexUpsert(item.scope, item);
+    }
+
     log(`Memory upsert completed successfully: ${id}`);
     return item.id;
   }
@@ -833,6 +864,16 @@ export class MemoryManager {
     const indexer = this.getIndexer(scope, cwd);
     const rank = this.getRanking(scope);
     indexer.rebuildFromItems(items, rank.fieldWeights as any);
+
+    // Also rebuild vector index for any items that have vectors
+    const vectorIndex = this.getVectorIndex(scope, cwd);
+    for (const item of items) {
+      if (item.vectors && Array.isArray(item.vectors) && item.vectors.length > 0) {
+        vectorIndex.set(item.id, item.vectors);
+      }
+    }
+
+    log(`Rebuilt scope ${scope}: ${items.length} items indexed`);
     return { items: items.length };
   }
 

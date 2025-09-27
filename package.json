@@ -24,7 +24,13 @@
     "migrate:storage": "tsx src/cli/migration-cli.ts storage",
     "migrate:scope": "tsx src/cli/migration-cli.ts scope",
     "migrate:status": "tsx src/cli/migration-cli.ts status",
-    "migrate:validate": "tsx src/cli/migration-cli.ts validate"
+    "migrate:validate": "tsx src/cli/migration-cli.ts validate",
+    "validate:parity": "tsx scripts/run-validation-tests.ts",
+    "test:parity": "jest tests/storage-parity-validation.test.ts",
+    "test:migration": "jest tests/migration-validation.test.ts",
+    "test:search": "jest tests/search-parity-validation.test.ts",
+    "test:performance": "jest tests/performance-benchmarks.test.ts",
+    "test:report": "jest tests/feature-parity-report.test.ts"
   },
   "packageManager": "pnpm@9.9.0",
   "keywords": [
