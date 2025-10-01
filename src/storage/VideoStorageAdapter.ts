@@ -137,7 +137,20 @@ export class VideoStorageAdapter implements StorageAdapter {
     this.catalog = this.loadCatalogFromDisk();
     this.ensureStorageBackendMarker();
 
-    this.initializationPromise = this.initializeVideoComponents();
+    // Auto-rebuild catalog if index has items but catalog is empty
+    // This handles cases where catalog.json was deleted or corrupted
+    const hasIndexedItems = Object.keys(this.index.items).length > 0;
+    const hasCatalogEntries = Object.keys(this.catalog).length > 0;
+
+    if (hasIndexedItems && !hasCatalogEntries) {
+      console.warn(`[VideoStorageAdapter] Video index has ${Object.keys(this.index.items).length} items but catalog is empty - rebuilding catalog`);
+      this.initializationPromise = this.initializeVideoComponents().then(async () => {
+        await this.rebuildCatalog();
+        console.warn(`[VideoStorageAdapter] Catalog rebuilt: ${Object.keys(this.catalog).length} items restored`);
+      });
+    } else {
+      this.initializationPromise = this.initializeVideoComponents();
+    }
   }
 
   private ensureDirectories(): void {

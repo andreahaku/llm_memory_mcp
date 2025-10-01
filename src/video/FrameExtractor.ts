@@ -375,15 +375,16 @@ export class FrameExtractor {
         args.push(
           '-ss', timestamp.toString(),
           '-i', videoPath,
-          // Normal frame selection
-          '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, false)
+          // After -ss seek, frame numbering resets, so select frame 0
+          '-vf', this.buildVideoFilters(0, scale, highQuality, false)
         );
       } catch (error) {
         // Fallback to 30fps assumption if video info fails
         args.push(
           '-ss', `${frameIndex / 30}`,
           '-i', videoPath,
-          '-vf', this.buildVideoFilters(frameIndex, scale, highQuality, false)
+          // After -ss seek, frame numbering resets, so select frame 0
+          '-vf', this.buildVideoFilters(0, scale, highQuality, false)
         );
       }
     }
