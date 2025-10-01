@@ -216,6 +216,68 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'memory.patch',
+          description: 'Apply incremental text replacements to a memory item without full rewrite',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Memory item ID to patch' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' },
+              operations: {
+                type: 'array',
+                description: 'Array of patch operations to apply',
+                items: {
+                  type: 'object',
+                  properties: {
+                    field: { type: 'string', enum: ['title','text','code'], description: 'Field to modify' },
+                    old: { type: 'string', description: 'Text to replace (must match exactly)' },
+                    new: { type: 'string', description: 'Replacement text' },
+                  },
+                  required: ['field', 'old', 'new']
+                }
+              }
+            },
+            required: ['id', 'operations'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'memory.append',
+          description: 'Append content to a memory item\'s text or code field',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Memory item ID' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' },
+              field: { type: 'string', enum: ['text','code'], description: 'Field to append to' },
+              content: { type: 'string', description: 'Content to append' },
+              separator: { type: 'string', description: 'Separator to add before content (default: "\\n\\n")' },
+            },
+            required: ['id', 'field', 'content'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'memory.merge',
+          description: 'Merge multiple memory items into one, combining their content intelligently',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              sourceIds: { type: 'array', items: { type: 'string' }, description: 'IDs of memories to merge' },
+              targetId: { type: 'string', description: 'Optional target ID (if omitted, creates new memory)' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Scope for merged item' },
+              strategy: {
+                type: 'string',
+                enum: ['concat', 'deduplicate', 'prioritize-first', 'prioritize-recent'],
+                description: 'Merge strategy (default: deduplicate)'
+              },
+              deleteSource: { type: 'boolean', description: 'Delete source items after merge (default: false)' },
+            },
+            required: ['sourceIds', 'scope'],
+            additionalProperties: false,
+          },
+        },
+        {
           name: 'vectors.set',
           description: 'Set or update a vector embedding for an item',
           inputSchema: {
@@ -622,6 +684,181 @@ class LLMKnowledgeBaseServer {
 
             log(`Memory upserted successfully: id=${id}, scope=${scope}`);
             return { content: [{ type: 'text', text: `memory.upsert: ${id}` }] };
+          }
+
+          case 'memory.patch': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+            const operations = args.operations as Array<{ field: 'title' | 'text' | 'code'; old: string; new: string }>;
+
+            log(`Patching memory: id=${id}, operations=${operations.length}`);
+
+            // Read existing item (works with both file and video storage)
+            const item = await this.memory.get(id, scope);
+            if (!item) {
+              log(`Memory not found: id=${id}`);
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${id} not found`);
+            }
+
+            // Apply patches
+            let modified = false;
+            for (const op of operations) {
+              const fieldValue = item[op.field];
+              if (typeof fieldValue !== 'string') {
+                log(`Field ${op.field} is not a string or is undefined, skipping`);
+                continue;
+              }
+
+              if (!fieldValue.includes(op.old)) {
+                log(`Warning: old text not found in ${op.field}, skipping operation`);
+                continue;
+              }
+
+              // Replace text
+              (item as any)[op.field] = fieldValue.replace(op.old, op.new);
+              modified = true;
+              log(`Applied patch to ${op.field}: replaced ${op.old.length} chars with ${op.new.length} chars`);
+            }
+
+            if (!modified) {
+              log(`No patches applied to ${id}`);
+              return { content: [{ type: 'text', text: `memory.patch: ${id} (no changes)` }] };
+            }
+
+            // Update item (creates new frame in video storage)
+            await this.memory.upsert(item);
+
+            log(`Memory patched successfully: id=${id}, ${operations.length} operations applied`);
+            return { content: [{ type: 'text', text: `memory.patch: ${id} updated` }] };
+          }
+
+          case 'memory.append': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+            const field = args.field as 'text' | 'code';
+            const content = args.content as string;
+            const separator = (args.separator as string) || '\n\n';
+
+            log(`Appending to memory: id=${id}, field=${field}, content length=${content.length}`);
+
+            // Read existing item
+            const item = await this.memory.get(id, scope);
+            if (!item) {
+              log(`Memory not found: id=${id}`);
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${id} not found`);
+            }
+
+            // Append content
+            const existingContent = item[field] || '';
+            (item as any)[field] = existingContent + separator + content;
+
+            // Update item (creates new frame in video storage)
+            await this.memory.upsert(item);
+
+            log(`Memory appended successfully: id=${id}, new ${field} length=${(item[field] as string).length}`);
+            return { content: [{ type: 'text', text: `memory.append: ${id} updated` }] };
+          }
+
+          case 'memory.merge': {
+            const sourceIds = args.sourceIds as string[];
+            const targetId = args.targetId as string | undefined;
+            const scope = args.scope as MemoryScope;
+            const strategy = (args.strategy as string) || 'deduplicate';
+            const deleteSource = (args.deleteSource as boolean) || false;
+
+            log(`Merging memories: sources=${sourceIds.length}, strategy=${strategy}, deleteSource=${deleteSource}`);
+
+            // Read all source items
+            const sourceItems = await Promise.all(
+              sourceIds.map(id => this.memory.get(id, scope))
+            );
+
+            // Filter out nulls
+            const validItems = sourceItems.filter((item): item is NonNullable<typeof item> => item !== null);
+            if (validItems.length === 0) {
+              throw new McpError(ErrorCode.InvalidRequest, 'No valid source items found');
+            }
+
+            log(`Found ${validItems.length} valid items to merge`);
+
+            // Read target or use first item as base
+            let mergedItem = targetId
+              ? await this.memory.get(targetId, scope)
+              : null;
+
+            if (!mergedItem) {
+              mergedItem = { ...validItems[0] };
+              if (!targetId) {
+                delete (mergedItem as any).id; // Let upsert generate new ID
+              }
+            }
+
+            // Merge based on strategy
+            switch (strategy) {
+              case 'concat':
+                // Simple concatenation
+                mergedItem.text = validItems.map(i => i.text || '').filter(Boolean).join('\n\n');
+                mergedItem.code = validItems.map(i => i.code || '').filter(Boolean).join('\n\n');
+                break;
+
+              case 'deduplicate':
+                // Deduplicate lines
+                const allTextLines = new Set<string>();
+                const allCodeLines = new Set<string>();
+                for (const item of validItems) {
+                  if (item.text) item.text.split('\n').forEach(line => allTextLines.add(line));
+                  if (item.code) item.code.split('\n').forEach(line => allCodeLines.add(line));
+                }
+                mergedItem.text = Array.from(allTextLines).join('\n');
+                mergedItem.code = Array.from(allCodeLines).join('\n');
+                break;
+
+              case 'prioritize-first':
+                // Keep first item's content, merge metadata
+                mergedItem.text = validItems[0].text;
+                mergedItem.code = validItems[0].code;
+                break;
+
+              case 'prioritize-recent':
+                // Use most recently updated item's content
+                const mostRecent = validItems.sort((a, b) =>
+                  new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+                )[0];
+                mergedItem.text = mostRecent.text;
+                mergedItem.code = mostRecent.code;
+                break;
+            }
+
+            // Merge facets (tags, files, symbols) - deduplicate
+            const allTags = new Set<string>();
+            const allFiles = new Set<string>();
+            const allSymbols = new Set<string>();
+            for (const item of validItems) {
+              item.facets.tags.forEach(t => allTags.add(t));
+              item.facets.files.forEach(f => allFiles.add(f));
+              item.facets.symbols.forEach(s => allSymbols.add(s));
+            }
+            mergedItem.facets = {
+              tags: Array.from(allTags),
+              files: Array.from(allFiles),
+              symbols: Array.from(allSymbols)
+            };
+
+            // Update merged item (creates new frame in video storage)
+            const finalId = await this.memory.upsert(mergedItem);
+
+            // Delete source items if requested
+            if (deleteSource) {
+              for (const id of sourceIds) {
+                if (id !== finalId) { // Don't delete if it's the target
+                  await this.memory.delete(id, scope);
+                }
+              }
+              log(`Deleted ${sourceIds.length} source items after merge`);
+            }
+
+            log(`Memory merge completed: result=${finalId}, strategy=${strategy}`);
+            return { content: [{ type: 'text', text: `memory.merge: ${finalId}` }] };
           }
 
           case 'memory.get': {
