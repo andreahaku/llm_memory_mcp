@@ -114,8 +114,11 @@ pnpm run benchmark
 **MCP Server** (`src/index.ts`)
 - `LLMKnowledgeBaseServer`: Main MCP server with 40+ tools
 - Memory operations: upsert, query, delete, link, pin, tag, feedback
+- Incremental editing: patch, append, merge (inspired by Claude's memory tool)
+- TTL management: auto-pruning, renewal (automatic cleanup)
+- MCP prompts: check-memory (automatic memory discovery before tasks)
 - Project management: init, config, sync
-- Maintenance: rebuild, compact, snapshot, verify
+- Maintenance: rebuild, compact, snapshot, verify, prune
 - Migration: storage backend switching, scope migration, validation
 - Video capabilities checking on startup with FFmpeg detection
 
@@ -281,6 +284,53 @@ interface MemoryItem {
   version: number;
 }
 ```
+
+### New Features (Inspired by Claude's Memory Tool)
+
+**Automatic Memory Check** (MCP Prompts)
+- `check-memory` prompt for discovering relevant memories before tasks
+- Auto-queries based on task description, files, and context
+- Returns formatted markdown with memories, code snippets, confidence scores
+- Helps Claude discover existing knowledge without explicit queries
+- Example: Before implementing auth, Claude checks for existing JWT patterns
+
+**Incremental Editing Operations**
+- `memory.patch`: Apply surgical text replacements (like str_replace)
+  - Multiple operations per call
+  - Replaces specific text in title, text, or code fields
+  - Skips operations if old text not found (logs warning)
+
+- `memory.append`: Add content without rewriting (like insert)
+  - Append to text or code fields
+  - Configurable separator (default: "\n\n")
+  - Preserves existing content
+
+- `memory.merge`: Combine multiple memories intelligently
+  - Strategies: concat, deduplicate, prioritize-first, prioritize-recent
+  - Auto-deduplicates tags, files, symbols
+  - Optional source deletion after merge
+
+- **Video Storage Compatibility**: All operations use read-modify-write pattern
+  - Read item from storage (single frame decode)
+  - Modify fields in memory
+  - Write back via upsert (creates new frame, old preserved)
+  - Works identically for file and video backends
+
+**TTL-Based Auto-Pruning**
+- `maintenance.prune`: Remove expired memories automatically
+  - Checks expiresAt timestamp
+  - Dry-run preview mode
+  - Works across all scopes
+  - Reports expired/kept counts per scope
+
+- `memory.renew`: Extend TTL for valuable memories
+  - Extends expiration date for active items
+  - Can set new TTL or reuse original
+  - Auto-calculates new expiresAt timestamp
+
+- **Use Cases**: Temporary debugging context (7 days), sprint notes (14 days), experimental patterns (30 days)
+- **Video Storage**: Removes catalog entry (frames remain but become inaccessible)
+- **Integration**: Can run during compaction or via scheduler
 
 ## Key Implementation Details
 
