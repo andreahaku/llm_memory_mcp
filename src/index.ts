@@ -500,6 +500,32 @@ class LLMKnowledgeBaseServer {
           inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
         },
         {
+          name: 'maintenance.prune',
+          description: 'Remove expired memories based on TTL (time-to-live)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scope: { type: 'string', enum: ['global','local','committed','project','all'], description: 'Scope to prune' },
+              dryRun: { type: 'boolean', description: 'Preview what would be deleted without actually deleting' },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'memory.renew',
+          description: 'Extend TTL for active memories',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Memory item ID' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope' },
+              ttlDays: { type: 'number', description: 'New TTL in days (if omitted, extends by original TTL)' },
+            },
+            required: ['id'],
+            additionalProperties: false,
+          },
+        },
+        {
           name: 'memory.feedback',
           description: 'Record user feedback (helpful/not helpful) for a memory item',
           inputSchema: {
@@ -1121,6 +1147,91 @@ class LLMKnowledgeBaseServer {
             const res = await this.memory.replayJournal(scope as MemoryScope, undefined, true);
             this.memory.snapshotScope(scope as MemoryScope);
             return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
+          }
+
+          case 'maintenance.prune': {
+            const scope = (args.scope as string) || 'project';
+            const dryRun = (args.dryRun as boolean) || false;
+
+            log(`Pruning expired memories: scope=${scope}, dryRun=${dryRun}`);
+
+            const now = new Date();
+            const scopes: MemoryScope[] = scope === 'all' ? ['global', 'local', 'committed']
+              : scope === 'project' ? ['local', 'committed']
+              : [scope as MemoryScope];
+
+            const pruneResults: Record<string, { expired: string[]; kept: number }> = {};
+
+            for (const s of scopes) {
+              const allItems = await this.memory.list(s as any);
+              const expired: string[] = [];
+
+              for (const summary of allItems) {
+                const item = await this.memory.get(summary.id, s);
+                if (!item) continue;
+
+                // Check if item has expired
+                if (item.quality.expiresAt) {
+                  const expireDate = new Date(item.quality.expiresAt);
+                  if (now >= expireDate) {
+                    expired.push(item.id);
+                    if (!dryRun) {
+                      await this.memory.delete(item.id, s);
+                      log(`Pruned expired memory: id=${item.id}, expired=${item.quality.expiresAt}`);
+                    }
+                  }
+                }
+              }
+
+              pruneResults[s] = {
+                expired: expired,
+                kept: allItems.length - expired.length
+              };
+
+              log(`Pruning ${s}: ${expired.length} expired, ${pruneResults[s].kept} kept`);
+            }
+
+            const totalExpired = Object.values(pruneResults).reduce((sum, r) => sum + r.expired.length, 0);
+            const totalKept = Object.values(pruneResults).reduce((sum, r) => sum + r.kept, 0);
+
+            const result = {
+              dryRun,
+              totalExpired,
+              totalKept,
+              byScope: pruneResults
+            };
+
+            log(`Prune completed: ${totalExpired} expired, ${totalKept} kept`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'memory.renew': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+            const ttlDays = args.ttlDays as number | undefined;
+
+            log(`Renewing memory TTL: id=${id}${scope ? `, scope=${scope}` : ''}${ttlDays ? `, ttlDays=${ttlDays}` : ''}`);
+
+            // Get existing item
+            const item = await this.memory.get(id, scope);
+            if (!item) {
+              log(`Memory not found: id=${id}`);
+              throw new McpError(ErrorCode.InvalidRequest, `Item ${id} not found`);
+            }
+
+            // Calculate new TTL
+            const originalTtl = item.quality.ttlDays || 30; // default 30 days
+            const newTtl = ttlDays || originalTtl;
+            const newExpiresAt = new Date(Date.now() + newTtl * 24 * 60 * 60 * 1000).toISOString();
+
+            // Update item
+            item.quality.ttlDays = newTtl;
+            item.quality.expiresAt = newExpiresAt;
+
+            await this.memory.upsert(item);
+
+            log(`Memory TTL renewed: id=${id}, ttlDays=${newTtl}, expiresAt=${newExpiresAt}`);
+            return { content: [{ type: 'text', text: `memory.renew: ${id} (ttl=${newTtl} days, expires=${newExpiresAt})` }] };
           }
 
           case 'memory.feedback': {
