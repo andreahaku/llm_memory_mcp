@@ -7,6 +7,8 @@ import {
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   McpError,
   ErrorCode
 } from '@modelcontextprotocol/sdk/types.js';
@@ -1266,6 +1268,144 @@ class LLMKnowledgeBaseServer {
         throw new McpError(
           ErrorCode.InternalError,
           `Resource access failed: ${errorMessage}`
+        );
+      }
+    });
+
+    // Prompts handler - automatic memory checking before tasks
+    this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      log('📝 Listing available prompts');
+      return {
+        prompts: [
+          {
+            name: 'check-memory',
+            description: 'Check relevant memories before starting a task',
+            arguments: [
+              {
+                name: 'task',
+                description: 'Brief description of the task you\'re about to start',
+                required: true
+              },
+              {
+                name: 'files',
+                description: 'Comma-separated list of files you\'ll be working with',
+                required: false
+              },
+              {
+                name: 'context',
+                description: 'Additional context (e.g., feature name, bug ID)',
+                required: false
+              }
+            ]
+          }
+        ]
+      };
+    });
+
+    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      const { name, arguments: args } = request.params;
+      const startTime = Date.now();
+
+      log(`🔍 Prompt requested: ${name}`);
+
+      try {
+        if (name === 'check-memory') {
+          const task = args?.task as string || '';
+          const files = args?.files as string || '';
+          const context = args?.context as string || '';
+
+          // Query for relevant memories based on task description
+          const query: MemoryQuery = {
+            q: task + (context ? ` ${context}` : ''),
+            scope: 'project',
+            k: 10,
+            filters: {
+              confidence: { min: 0.5 }
+            }
+          };
+
+          // Add file filters if provided
+          if (files) {
+            query.filters!.files = files.split(',').map(f => f.trim());
+          }
+
+          const results = await this.memory.query(query);
+          const projectInfo = this.memory.getProjectInfo();
+
+          // Build prompt message
+          let message = `# Memory Check for Task\n\n`;
+          message += `**Task**: ${task}\n`;
+          if (files) message += `**Files**: ${files}\n`;
+          if (context) message += `**Context**: ${context}\n`;
+          message += `**Project**: ${projectInfo.repoId || 'Unknown'}\n\n`;
+
+          if (results.items.length === 0) {
+            message += `*No relevant memories found. This appears to be a new area of work.*\n\n`;
+            message += `Consider capturing key learnings as you work on this task.`;
+          } else {
+            message += `## Relevant Memories (${results.total} found)\n\n`;
+
+            for (const item of results.items) {
+              message += `### ${item.title || item.type}\n`;
+              message += `**Type**: ${item.type} | **Confidence**: ${(item.quality.confidence * 100).toFixed(0)}%`;
+              if (item.quality.pinned) message += ` 📌`;
+              message += `\n`;
+
+              if (item.facets.tags.length > 0) {
+                message += `**Tags**: ${item.facets.tags.join(', ')}\n`;
+              }
+              if (item.facets.files.length > 0) {
+                message += `**Related Files**: ${item.facets.files.join(', ')}\n`;
+              }
+
+              if (item.text) {
+                message += `\n${item.text}\n`;
+              }
+
+              if (item.code && item.code.length <= 500) {
+                const lang = item.language || '';
+                message += `\n\`\`\`${lang}\n${item.code}\n\`\`\`\n`;
+              } else if (item.code) {
+                const lang = item.language || '';
+                message += `\n\`\`\`${lang}\n${item.code.substring(0, 400)}\n... (truncated)\n\`\`\`\n`;
+              }
+
+              message += `\n---\n\n`;
+            }
+
+            message += `\n💡 **Tip**: Use these memories to inform your approach. Update them if you discover better patterns or fix issues.`;
+          }
+
+          const duration = Date.now() - startTime;
+          log(`✅ Prompt '${name}' completed in ${duration}ms, found ${results.items.length} memories`);
+
+          return {
+            description: 'Relevant memories for your task',
+            messages: [
+              {
+                role: 'user' as const,
+                content: {
+                  type: 'text' as const,
+                  text: message
+                }
+              }
+            ]
+          };
+        }
+
+        throw new McpError(ErrorCode.InvalidRequest, `Unknown prompt: ${name}`);
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        if (error instanceof McpError) {
+          log(`❌ Prompt error (${name}) after ${duration}ms: ${error.message}`);
+          throw error;
+        }
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`💥 Prompt execution failed (${name}) after ${duration}ms: ${errorMessage}`);
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Prompt execution failed: ${errorMessage}`
         );
       }
     });
