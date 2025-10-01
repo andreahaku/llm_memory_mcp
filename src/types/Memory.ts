@@ -62,6 +62,7 @@ export interface MemoryItem {
   id: string; // ULID
   type: MemoryType;
   scope: MemoryScope;
+  path?: string; // Hierarchical organization path (e.g., 'team/backend/auth/jwt')
   title?: string;
   text?: string;
   code?: string;
@@ -81,12 +82,15 @@ export interface MemoryItemSummary {
   id: string;
   type: MemoryType;
   scope: MemoryScope;
+  path?: string;
   title?: string;
   tags: string[];
   files: string[];
   symbols: string[];
   confidence: number;
   pinned?: boolean;
+  sizeBytes?: number; // Storage size tracking
+  tokenCount?: number; // Estimated token count
   createdAt: string;
   updatedAt: string;
 }
@@ -128,6 +132,7 @@ export interface MemoryQuery {
     files?: string[];
     symbols?: string[];
     language?: string[];
+    pathPrefix?: string; // Filter by hierarchical path prefix
     timeRange?: { start: string; end: string };
     tool?: string[];
     confidence?: { min?: number; max?: number };

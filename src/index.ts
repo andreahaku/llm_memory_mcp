@@ -1183,6 +1183,7 @@ class LLMKnowledgeBaseServer {
       resources: [
         { uri: 'kb://project/info', name: 'Project Info', description: 'Project memory context', mimeType: 'application/json' },
         { uri: 'kb://context/pack', name: 'Context Pack', description: 'Context pack; pass query params in URI', mimeType: 'application/json' },
+        { uri: 'kb://context/auto', name: 'Auto Context', description: 'Automatically generated context based on current project and files', mimeType: 'text/markdown' },
         { uri: 'kb://health', name: 'Server Health', description: 'Status and metrics', mimeType: 'application/json' },
       ],
     }));
@@ -1239,6 +1240,67 @@ class LLMKnowledgeBaseServer {
           return {
             contents: [
               { uri, mimeType: 'application/json', text: JSON.stringify(pack, null, 2) }
+            ]
+          };
+        }
+
+        if (uri === 'kb://context/auto') {
+          // Automatically generate relevant context based on project
+          const projectInfo = this.memory.getProjectInfo();
+
+          // Query for relevant memories based on current project
+          const query: MemoryQuery = {
+            scope: 'project',
+            k: 10,
+            filters: {
+              confidence: { min: 0.5 }
+            }
+          };
+
+          const results = await this.memory.query(query);
+
+          // Format as markdown for easy reading
+          let markdown = `# Auto-Generated Memory Context\n\n`;
+          markdown += `**Project**: ${projectInfo.repoId || 'Unknown'}\n`;
+          markdown += `**Branch**: ${projectInfo.branch || 'Unknown'}\n`;
+          markdown += `**Memory Count**: ${results.total}\n\n`;
+
+          if (results.items.length === 0) {
+            markdown += `*No relevant memories found for this project.*\n`;
+          } else {
+            markdown += `## Relevant Memories\n\n`;
+
+            for (const item of results.items) {
+              markdown += `### ${item.title || item.type}\n`;
+              if (item.path) {
+                markdown += `**Path**: \`${item.path}\`\n`;
+              }
+              markdown += `**Type**: ${item.type} | **Confidence**: ${(item.quality.confidence * 100).toFixed(0)}%`;
+              if (item.quality.pinned) {
+                markdown += ` 📌`;
+              }
+              markdown += `\n`;
+
+              if (item.facets.tags.length > 0) {
+                markdown += `**Tags**: ${item.facets.tags.join(', ')}\n`;
+              }
+
+              if (item.text) {
+                markdown += `\n${item.text.substring(0, 200)}${item.text.length > 200 ? '...' : ''}\n`;
+              }
+
+              if (item.code) {
+                const lang = item.language || '';
+                markdown += `\n\`\`\`${lang}\n${item.code.substring(0, 300)}${item.code.length > 300 ? '\n...' : ''}\n\`\`\`\n`;
+              }
+
+              markdown += `\n---\n\n`;
+            }
+          }
+
+          return {
+            contents: [
+              { uri, mimeType: 'text/markdown', text: markdown }
             ]
           };
         }
