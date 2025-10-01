@@ -7,6 +7,9 @@ A local-first, team-ready MCP server that provides a durable memory system for L
 - **Revolutionary Video Storage**: 50-100x compression through QR code + video encoding while maintaining sub-100ms search
 - **Automatic Backend Selection**: Intelligent detection of FFmpeg capabilities with graceful fallback to file storage
 - **Dual Storage Architecture**: Seamless switching between video compression and traditional file storage
+- **New: Automatic Memory Discovery**: MCP prompts check relevant memories before tasks (inspired by Claude's memory tool)
+- **New: Incremental Editing**: Patch, append, and merge operations for efficient memory updates
+- **New: TTL Auto-Pruning**: Automatic cleanup of expired memories with configurable time-to-live
 - Unified Memory model: snippet, pattern, config, insight, runbook, fact, note
 - Scopes: global (personal), local (per-project, uncommitted), committed (project/.llm-memory)
 - **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
@@ -449,6 +452,10 @@ Initialize committed scope in current project:
 - memory.tag — Add/remove tags
 - **memory.feedback** — Record helpful/not helpful feedback for confidence scoring
 - **memory.use** — Record usage/access events for confidence scoring
+- **memory.patch** — Apply surgical text replacements without full rewrite
+- **memory.append** — Add content to existing memories incrementally
+- **memory.merge** — Combine multiple memories intelligently with deduplication
+- **memory.renew** — Extend TTL for valuable memories
 
 ### Vector Search
 - vectors.set — Set/update an item embedding (for hybrid search)
@@ -472,6 +479,7 @@ Initialize committed scope in current project:
 - maintenance.compactSnapshot — One-click compaction + snapshot
 - maintenance.snapshot — Write snapshot meta (lastTs + checksum)
 - maintenance.verify — Verify current checksum vs snapshot and state-ok markers
+- **maintenance.prune** — Remove expired memories based on TTL (with dry-run option)
 
 ### Journal Operations
 - **journal.stats** — Get journal statistics and optimization status
@@ -483,6 +491,9 @@ Initialize committed scope in current project:
 - **migration.storage.backend** — Migrate between file and video storage backends
 - **migration.scope** — Migrate filtered memories between scopes (global/local/committed)
 - **migration.validate** — Validate migration integrity and consistency
+
+### MCP Prompts
+- **check-memory** — Auto-discover relevant memories before starting tasks (inspired by Claude's memory tool)
 
 Resources
 - kb://project/info — Project info + recent items
@@ -593,6 +604,114 @@ Rebuild catalog and index for project scopes:
 ```json
 { "name": "maintenance.rebuild", "arguments": { "scope": "project" } }
 ```
+
+## New Features (Inspired by Claude's Memory Tool)
+
+### Automatic Memory Check via MCP Prompts
+
+Claude can now proactively check for relevant memories before starting tasks:
+
+```typescript
+// Claude invokes the check-memory prompt
+{
+  "name": "check-memory",
+  "arguments": {
+    "task": "Implement JWT token rotation",
+    "files": "src/auth/jwt.ts, src/middleware/auth.ts",
+    "context": "feature/auth-improvements"
+  }
+}
+```
+
+Returns formatted markdown with relevant memories, code snippets, and confidence scores to help Claude discover existing knowledge patterns automatically.
+
+### Incremental Editing Operations
+
+Edit memories without full rewrites, inspired by Claude's `str_replace` and `insert` commands:
+
+**Fix a typo:**
+```json
+{ "name": "memory.patch", "arguments": {
+  "id": "01HX...",
+  "operations": [
+    { "field": "text", "old": "authetication", "new": "authentication" }
+  ]
+}}
+```
+
+**Add new learnings:**
+```json
+{ "name": "memory.append", "arguments": {
+  "id": "01HX...",
+  "field": "text",
+  "content": "Update: Also works with OAuth2 flows",
+  "separator": "\n\n"
+}}
+```
+
+**Combine duplicate memories:**
+```json
+{ "name": "memory.merge", "arguments": {
+  "sourceIds": ["01HX...", "01HY...", "01HZ..."],
+  "scope": "local",
+  "strategy": "deduplicate",
+  "deleteSource": true
+}}
+```
+
+**Merge strategies:**
+- `concat` — Simple concatenation
+- `deduplicate` — Remove duplicate lines (default)
+- `prioritize-first` — Keep first item's content
+- `prioritize-recent` — Use most recently updated content
+
+**Video Storage Compatibility:** All incremental operations work seamlessly with video storage through a read-modify-write pattern. The system reads the item (decodes frame), modifies it in memory, then writes back via upsert (creates new frame). Old frames are preserved for history/recovery.
+
+### TTL-Based Auto-Pruning
+
+Automatically manage memory lifecycle with time-to-live settings:
+
+**Create temporary memory:**
+```json
+{ "name": "memory.upsert", "arguments": {
+  "type": "insight",
+  "scope": "local",
+  "text": "Debugging auth flow - using test token ABC123",
+  "quality": { "ttlDays": 7 }
+}}
+```
+
+**Preview expired memories:**
+```json
+{ "name": "maintenance.prune", "arguments": {
+  "scope": "local",
+  "dryRun": true
+}}
+```
+
+**Remove expired memories:**
+```json
+{ "name": "maintenance.prune", "arguments": {
+  "scope": "local",
+  "dryRun": false
+}}
+```
+
+**Extend TTL for valuable memories:**
+```json
+{ "name": "memory.renew", "arguments": {
+  "id": "01HX...",
+  "ttlDays": 90
+}}
+```
+
+**Common TTL patterns:**
+- Debugging context: 7 days
+- Sprint notes: 14 days
+- Experimental patterns: 30 days
+- Valuable insights: 90-365 days
+
+**Video Storage:** Pruning removes catalog entries while preserving video frames for potential recovery.
 
 ## Ranking and Tuning
 
