@@ -188,7 +188,7 @@ export interface ProjectInfo {
 export interface MemoryConfig {
   version: string;
   storage?: {
-    backend?: 'file' | 'video';
+    backend?: 'file' | 'video' | 'markdown';
   };
   sharing?: {
     enabled: boolean;

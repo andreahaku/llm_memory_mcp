@@ -589,12 +589,12 @@ class LLMKnowledgeBaseServer {
         },
         {
           name: 'migration.storage_backend',
-          description: 'Migrate storage between file and video backends within same scope',
+          description: 'Migrate storage between file, video, and markdown backends within same scope',
           inputSchema: {
             type: 'object',
             properties: {
-              sourceBackend: { type: 'string', enum: ['file', 'video'] },
-              targetBackend: { type: 'string', enum: ['file', 'video'] },
+              sourceBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
+              targetBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
@@ -633,7 +633,7 @@ class LLMKnowledgeBaseServer {
                 },
                 additionalProperties: false
               },
-              storageBackend: { type: 'string', enum: ['file', 'video'], description: 'Storage backend to use' },
+              storageBackend: { type: 'string', enum: ['file', 'video', 'markdown'], description: 'Storage backend to use' },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
             },
@@ -648,7 +648,7 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
             },
             required: ['scope', 'backend'],
             additionalProperties: false,
@@ -661,7 +661,7 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
             },
             required: ['scope', 'backend'],
@@ -1028,7 +1028,7 @@ class LLMKnowledgeBaseServer {
             // If setting storage backend, also update the default backend preference
             if (config?.storage?.backend) {
               const backend = config.storage.backend;
-              if (backend === 'video' || backend === 'file') {
+              if (backend === 'video' || backend === 'file' || backend === 'markdown') {
                 log(`Setting default backend preference to: ${backend}`);
                 this.memory.setDefaultBackend(backend);
               }
@@ -1341,8 +1341,8 @@ class LLMKnowledgeBaseServer {
                 'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
               );
             }
-            const sourceBackend = args.sourceBackend as 'file' | 'video';
-            const targetBackend = args.targetBackend as 'file' | 'video';
+            const sourceBackend = args.sourceBackend as 'file' | 'video' | 'markdown';
+            const targetBackend = args.targetBackend as 'file' | 'video' | 'markdown';
             const scope = args.scope as MemoryScope;
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
@@ -1398,7 +1398,7 @@ class LLMKnowledgeBaseServer {
             const sourceScope = args.sourceScope as MemoryScope;
             const targetScope = args.targetScope as MemoryScope;
             const contentFilter = args.contentFilter as any;
-            const storageBackend = (args.storageBackend as 'file' | 'video') || 'file';
+            const storageBackend = (args.storageBackend as 'file' | 'video' | 'markdown') || 'file';
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
 
@@ -1457,7 +1457,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
 
             log(`Getting migration status: scope=${scope}, backend=${backend}`);
 
@@ -1476,7 +1476,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
             const expectedItems = args.expectedItems as string[] || [];
 
             log(`Validating migration: scope=${scope}, backend=${backend}${expectedItems.length > 0 ? `, checking ${expectedItems.length} items` : ''}`);

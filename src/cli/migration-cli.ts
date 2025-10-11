@@ -112,8 +112,8 @@ class MigrationCLI {
   }
 
   private parseStorageBackend(backend: string): StorageBackend {
-    if (!['file', 'video'].includes(backend)) {
-      throw new Error(`Invalid storage backend: ${backend}. Must be one of: file, video`);
+    if (!['file', 'video', 'markdown'].includes(backend)) {
+      throw new Error(`Invalid storage backend: ${backend}. Must be one of: file, video, markdown`);
     }
     return backend as StorageBackend;
   }
@@ -257,7 +257,7 @@ class MigrationCLI {
   }): Promise<void> {
     try {
       const scopes: MemoryScope[] = options.scope ? [this.parseScope(options.scope)] : ['global', 'local', 'committed'];
-      const backends: StorageBackend[] = options.backend ? [this.parseStorageBackend(options.backend)] : ['file', 'video'];
+      const backends: StorageBackend[] = options.backend ? [this.parseStorageBackend(options.backend)] : ['file', 'video', 'markdown'];
 
       const statuses = [];
 
@@ -369,9 +369,9 @@ class MigrationCLI {
     // Storage Backend Migration Command
     const storageCmd = program
       .command('storage')
-      .description('Migrate between storage backends (file ↔ video)')
-      .requiredOption('-s, --source <backend>', 'Source storage backend (file|video)')
-      .requiredOption('-t, --target <backend>', 'Target storage backend (file|video)')
+      .description('Migrate between storage backends (file ↔ video ↔ markdown)')
+      .requiredOption('-s, --source <backend>', 'Source storage backend (file|video|markdown)')
+      .requiredOption('-t, --target <backend>', 'Target storage backend (file|video|markdown)')
       .requiredOption('--scope <scope>', 'Memory scope (global|local|committed)')
       .option('-d, --dry-run', 'Show what would be migrated without making changes', false)
       .option('--no-validate', 'Skip validation after migration')
@@ -386,7 +386,7 @@ class MigrationCLI {
       .description('Migrate memories between scopes with content filtering')
       .requiredOption('-s, --source-scope <scope>', 'Source scope (global|local|committed)')
       .requiredOption('-t, --target-scope <scope>', 'Target scope (global|local|committed)')
-      .option('-b, --storage-backend <backend>', 'Storage backend to use (file|video)', 'file')
+      .option('-b, --storage-backend <backend>', 'Storage backend to use (file|video|markdown)', 'file')
       .option('-d, --dry-run', 'Show what would be migrated without making changes', false)
       .option('--no-validate', 'Skip validation after migration')
       .option('-q, --query <text>', 'Filter by text query in title/content')
@@ -406,7 +406,7 @@ class MigrationCLI {
       .command('status')
       .description('Show migration status and statistics')
       .option('-s, --scope <scope>', 'Specific scope to check (global|local|committed)')
-      .option('-b, --backend <backend>', 'Specific backend to check (file|video)')
+      .option('-b, --backend <backend>', 'Specific backend to check (file|video|markdown)')
       .action(async (options) => {
         await this.showMigrationStatus(options);
       });
@@ -416,7 +416,7 @@ class MigrationCLI {
       .command('validate')
       .description('Validate migration integrity')
       .requiredOption('-s, --scope <scope>', 'Scope to validate (global|local|committed)')
-      .requiredOption('-b, --backend <backend>', 'Backend to validate (file|video)')
+      .requiredOption('-b, --backend <backend>', 'Backend to validate (file|video|markdown)')
       .action(async (options) => {
         await this.validateMigration(options);
       });

@@ -32,7 +32,7 @@ type PartialBy<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 export class MemoryManager {
   private resolver = new ScopeResolver();
   private storageAdapterFactory: StorageAdapterFactory = new FileStorageAdapterFactory();
-  private defaultBackendPreference: 'file' | 'video' | null = null;
+  private defaultBackendPreference: 'file' | 'video' | 'markdown' | null = null;
 
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, StorageAdapter>> = {};
@@ -242,7 +242,7 @@ export class MemoryManager {
   /**
    * Set the default backend preference for new scopes
    */
-  setDefaultBackend(backend: 'file' | 'video' | null): void {
+  setDefaultBackend(backend: 'file' | 'video' | 'markdown' | null): void {
     this.defaultBackendPreference = backend;
     log(`Default storage backend preference set to: ${backend}`);
   }
@@ -250,7 +250,7 @@ export class MemoryManager {
   /**
    * Get the global default backend preference
    */
-  private getGlobalDefaultBackend(): 'file' | 'video' | null {
+  private getGlobalDefaultBackend(): 'file' | 'video' | 'markdown' | null {
     if (this.defaultBackendPreference !== null) {
       return this.defaultBackendPreference;
     }
@@ -262,7 +262,7 @@ export class MemoryManager {
   /**
    * Detect the optimal default backend based on system capabilities
    */
-  private detectOptimalDefaultBackend(): 'file' | 'video' {
+  private detectOptimalDefaultBackend(): 'file' | 'video' | 'markdown' {
     try {
       // Check if FFmpeg is available and working
       const { execSync } = require('child_process');
@@ -275,7 +275,7 @@ export class MemoryManager {
     }
   }
 
-  private detectStorageBackend(dir: string): 'file' | 'video' {
+  private detectStorageBackend(dir: string): 'file' | 'video' | 'markdown' {
     try {
       const configPath = path.join(dir, 'config.json');
       if (fs.existsSync(configPath)) {
@@ -283,11 +283,35 @@ export class MemoryManager {
           const configRaw = fs.readFileSync(configPath, 'utf8');
           const config = JSON.parse(configRaw);
           const backend = config?.storage?.backend;
-          if (backend === 'video' || backend === 'file') {
+          if (backend === 'video' || backend === 'file' || backend === 'markdown') {
             return backend;
           }
         } catch (error) {
           log(`Failed to read storage backend from config at ${configPath}:`, error);
+        }
+      }
+
+      // Check for markdown storage indicators (_LLM_memories/ directory with project subfolders)
+      const memoriesDir = path.join(dir, '_LLM_memories');
+      if (fs.existsSync(memoriesDir)) {
+        try {
+          const entries = fs.readdirSync(memoriesDir, { withFileTypes: true });
+          // Check if there are any subdirectories (project folders)
+          const hasProjectFolders = entries.some(entry => entry.isDirectory());
+          if (hasProjectFolders) {
+            // Verify at least one project folder contains .md files
+            for (const entry of entries) {
+              if (entry.isDirectory()) {
+                const projectPath = path.join(memoriesDir, entry.name);
+                const projectFiles = fs.readdirSync(projectPath);
+                if (projectFiles.some(f => f.endsWith('.md'))) {
+                  return 'markdown';
+                }
+              }
+            }
+          }
+        } catch (error) {
+          log(`Failed to check markdown storage directory at ${memoriesDir}:`, error);
         }
       }
 
@@ -303,7 +327,7 @@ export class MemoryManager {
 
       // Check for a default backend preference from environment or global config
       const defaultBackend = process.env.LLM_MEMORY_DEFAULT_BACKEND || this.getGlobalDefaultBackend();
-      if (defaultBackend === 'video' || defaultBackend === 'file') {
+      if (defaultBackend === 'video' || defaultBackend === 'file' || defaultBackend === 'markdown') {
         log(`Using default storage backend preference: ${defaultBackend}`);
         return defaultBackend;
       }
@@ -330,6 +354,11 @@ export class MemoryManager {
         const { VideoStorageAdapterFactory } = require('./storage/VideoStorageAdapter.js');
         const videoFactory = new VideoStorageAdapterFactory();
         store = videoFactory.create(dir, scope);
+      } else if (storageBackend === 'markdown') {
+        // Import MarkdownStorageAdapterFactory dynamically
+        const { MarkdownStorageAdapterFactory } = require('./storage/MarkdownStorageAdapter.js');
+        const markdownFactory = new MarkdownStorageAdapterFactory();
+        store = markdownFactory.create(dir, scope);
       } else {
         store = this.storageAdapterFactory.create(dir, scope);
       }
