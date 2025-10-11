@@ -221,6 +221,249 @@ The agent respects your LLM Memory MCP server configuration:
 
 No additional configuration needed - the agent adapts to your existing memory setup.
 
+## Auto-Learning from Git Commits
+
+Automatically capture development knowledge from your git commits to build a searchable knowledge base of your coding patterns, solutions, and insights.
+
+### Quick Start
+
+**1. Tag commits with `#kb` to capture knowledge:**
+```bash
+git commit -m "Implement JWT authentication with refresh tokens #kb #security"
+```
+
+**2. System automatically captures:**
+- Commit message and metadata
+- Code changes (diff)
+- Affected files and symbols
+- Additional context tags
+
+**3. Process captured events:**
+```json
+{ "name": "autolearn.processQueue", "arguments": {} }
+```
+
+**4. Knowledge becomes searchable:**
+```json
+{
+  "name": "memory.query",
+  "arguments": {
+    "q": "JWT authentication",
+    "scope": "project",
+    "k": 10
+  }
+}
+```
+
+### How It Works
+
+The auto-learning system consists of three integrated components:
+
+**1. Git Hooks** (automatically installed)
+- `commit-msg`: Detects `#kb` tags in commit messages
+- `post-commit`: Captures commit details to queue file
+
+**2. Event Queue** (`.llm-memory/autolearn-queue.ndjson`)
+- Stores captured events until processed
+- Survives server restarts
+- Prevents data loss
+
+**3. Materialization** (converts events to memories)
+- Classifies commits by type (fix → insight, refactor → pattern)
+- Extracts code snippets and context
+- Creates searchable MemoryItems
+
+### MCP Tools for Auto-Learning
+
+**Check System Status:**
+```json
+{ "name": "autolearn.status", "arguments": {} }
+```
+
+Returns:
+- Hook installation status
+- Queue size
+- System configuration
+
+**Initialize Auto-Learning:**
+```json
+{ "name": "autolearn.init", "arguments": { "autoInstall": true } }
+```
+
+Installs git hooks and Claude Code hooks/agents.
+
+**Process Event Queue:**
+```json
+{ "name": "autolearn.processQueue", "arguments": {} }
+```
+
+Processes all queued events and creates memories.
+
+**Capture Specific Commit:**
+```json
+{ "name": "autolearn.captureCommit", "arguments": { "commitHash": "HEAD" } }
+```
+
+Manually capture a commit (useful for retroactive capture).
+
+**Install Globally:**
+```json
+{ "name": "autolearn.installGlobally", "arguments": {} }
+```
+
+Install hooks and agents in your global Claude Code directory (`~/.claude/`).
+
+### Usage Examples
+
+**Capture Bug Fix:**
+```bash
+git commit -m "Fix race condition in authentication middleware #kb #bug #async"
+```
+
+Creates an `insight` memory with:
+- Title: "Fix race condition in authentication middleware"
+- Tags: kb, bug, async, fix
+- Code: Affected code from diff
+- Files: Modified files
+- Symbols: Extracted function/class names
+
+**Capture Pattern:**
+```bash
+git commit -m "Refactor API client with retry logic pattern #kb #pattern #resilience"
+```
+
+Creates a `pattern` memory documenting the retry pattern.
+
+**Capture Configuration:**
+```bash
+git commit -m "Add ESLint config for TypeScript strict mode #kb #config #typescript"
+```
+
+Creates a `config` memory with the configuration template.
+
+### Automatic Initialization
+
+When you connect the MCP server to Claude Code (or other MCP clients), the system automatically:
+
+1. **Detects your project** via git repository detection
+2. **Initializes auto-learning** with hook installation
+3. **Logs status** showing what was installed
+4. **Ready to capture** - just use `#kb` in commits
+
+No manual setup required! The system works out of the box.
+
+### Integration with dev-memory-manager Agent
+
+The dev-memory-manager agent integrates with auto-learning to:
+
+- **Check for queued events** on session start
+- **Process and present** captured knowledge
+- **Suggest** adding `#kb` tags to important commits
+- **Ensure hooks** are installed and working
+
+This creates a seamless workflow where you focus on coding and committing, and the system automatically builds your knowledge base.
+
+### Configuration
+
+Auto-learning respects the standard memory configuration system. Configure via `project.config.set`:
+
+```json
+{
+  "name": "project.config.set",
+  "arguments": {
+    "scope": "local",
+    "config": {
+      "version": "1",
+      "autolearn": {
+        "enabled": true,
+        "captureTypes": ["commit", "fix", "refactor", "pattern"],
+        "gitHooks": {
+          "enabled": true,
+          "tagPattern": "#kb",
+          "captureDiffs": true,
+          "maxDiffSize": 10000
+        },
+        "filters": {
+          "minLinesChanged": 5,
+          "includePatterns": ["**/*.ts", "**/*.js"],
+          "excludePatterns": ["**/node_modules/**", "**/dist/**"]
+        },
+        "storage": {
+          "scope": "local",
+          "defaultType": "snippet"
+        }
+      }
+    }
+  }
+}
+```
+
+### Best Practices
+
+**When to Use `#kb` Tags:**
+- ✅ Implementing new features or patterns
+- ✅ Fixing complex bugs with reusable solutions
+- ✅ Adding configurations or templates
+- ✅ Refactoring with architectural insights
+- ✅ Creating utilities or helper functions
+
+**When NOT to Use `#kb` Tags:**
+- ❌ Trivial changes (typos, formatting)
+- ❌ WIP/temporary commits
+- ❌ Merge commits or rebases
+- ❌ Commits with sensitive information
+
+**Tagging Strategy:**
+```bash
+# Include descriptive context tags
+git commit -m "Add rate limiting middleware #kb #security #express #middleware"
+
+# Use type indicators
+git commit -m "Fix memory leak in WebSocket handler #kb #bug #websocket"
+
+# Reference related systems
+git commit -m "Refactor authentication flow #kb #pattern #auth #jwt"
+```
+
+### Troubleshooting
+
+**Hooks not triggering?**
+```bash
+# Check hook installation
+ls -la .git/hooks/ | grep -E '(commit-msg|post-commit)'
+
+# Verify executable permissions
+chmod +x .git/hooks/commit-msg .git/hooks/post-commit
+
+# Check for marker file (created after #kb commit)
+ls -la .git/llm-memory-autolearn.tmp
+```
+
+**Queue not processing?**
+```bash
+# Check queue contents
+cat .llm-memory/autolearn-queue.ndjson
+
+# Check system status
+echo '{"name":"autolearn.status","arguments":{}}' | node dist/index.js
+
+# Manually process queue
+echo '{"name":"autolearn.processQueue","arguments":{}}' | node dist/index.js
+```
+
+**Agents not active?**
+```bash
+# Check agent installation
+ls -la ~/.claude/agents/ | grep dev-memory-manager
+
+# Check project-level agents
+ls -la .claude/agents/
+
+# Restart Claude Code to reload agents
+```
+
+For more detailed documentation, see [`docs/AUTO_LEARNING.md`](docs/AUTO_LEARNING.md).
+
 ## Storage Backends
 
 The LLM Memory MCP Server supports three storage backends, each optimized for different use cases:

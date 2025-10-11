@@ -30,7 +30,9 @@
     "test:migration": "jest tests/migration-validation.test.ts",
     "test:search": "jest tests/search-parity-validation.test.ts",
     "test:performance": "jest tests/performance-benchmarks.test.ts",
-    "test:report": "jest tests/feature-parity-report.test.ts"
+    "test:report": "jest tests/feature-parity-report.test.ts",
+    "install-hooks": "tsx scripts/install-hooks.ts",
+    "install-hooks:global": "tsx scripts/install-hooks.ts --global"
   },
   "packageManager": "pnpm@9.9.0",
   "keywords": [

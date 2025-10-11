@@ -15,6 +15,7 @@ import {
 
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import { AutoLearnManager } from './autolearn/AutoLearnManager.js';
 
 // Import MigrationManager conditionally to avoid FFmpeg dependency issues
 let MigrationManagerClass: any = null;
@@ -39,6 +40,7 @@ class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
   private migration: any;
+  private autoLearn: AutoLearnManager | null = null;
   private isShuttingDown = false;
 
   constructor() {
@@ -69,6 +71,24 @@ class LLMKnowledgeBaseServer {
       log('🔗 MCP client connecting...');
       const result = await originalConnect(transport);
       log('✅ MCP client connected successfully');
+
+      // Auto-initialize auto-learning if project detected
+      const projectInfo = this.memory.getProjectInfo();
+      if (projectInfo && !this.autoLearn) {
+        try {
+          log('🎓 Auto-initializing learning system...');
+          this.autoLearn = new AutoLearnManager(this.memory);
+          const initResult = await this.autoLearn.initialize(projectInfo.root, true);
+          if (initResult.success) {
+            log(`✅ Auto-learning initialized: git hooks=${initResult.gitHooksInstalled}, agents=${initResult.agentsInstalled}`);
+          } else {
+            log(`⚠️  Auto-learning initialization incomplete: ${initResult.errors.join(', ')}`);
+          }
+        } catch (error) {
+          log(`⚠️  Auto-learning initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
       return result;
     };
 
@@ -715,6 +735,55 @@ class LLMKnowledgeBaseServer {
               expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
             },
             required: ['scope', 'backend'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.status',
+          description: 'Get auto-learning system status and hook installation state',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.init',
+          description: 'Initialize auto-learning system for current project',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              autoInstall: { type: 'boolean', description: 'Auto-install hooks if missing (default: true)' },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.processQueue',
+          description: 'Process queued auto-learning events from git commits',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.captureCommit',
+          description: 'Manually capture a git commit for auto-learning',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              commitHash: { type: 'string', description: 'Commit hash (default: HEAD)' },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.installGlobally',
+          description: 'Install auto-learning hooks and agents globally',
+          inputSchema: {
+            type: 'object',
+            properties: {},
             additionalProperties: false,
           },
         },
@@ -1613,6 +1682,79 @@ class LLMKnowledgeBaseServer {
 
             log(`Migration validation: ${validation.success ? 'PASSED' : 'FAILED'} - ${validation.issues.length} issues`);
             return { content: [{ type: 'text', text: JSON.stringify(validation, null, 2) }] };
+          }
+
+          case 'autolearn.status': {
+            log('Getting auto-learning status');
+
+            if (!this.autoLearn) {
+              return { content: [{ type: 'text', text: JSON.stringify({ initialized: false }, null, 2) }] };
+            }
+
+            const status = await this.autoLearn.getStatus();
+            log(`Auto-learning status: ${status.initialized ? 'initialized' : 'not initialized'}`);
+            return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+          }
+
+          case 'autolearn.init': {
+            const projectInfo = this.memory.getProjectInfo();
+            if (!projectInfo) {
+              throw new McpError(ErrorCode.InvalidRequest, 'No project detected');
+            }
+
+            log(`Initializing auto-learning for project: ${projectInfo.repoId}`);
+
+            if (!this.autoLearn) {
+              this.autoLearn = new AutoLearnManager(this.memory);
+            }
+
+            const autoInstall = (args.autoInstall as boolean | undefined) ?? true;
+            const result = await this.autoLearn.initialize(projectInfo.root, autoInstall);
+
+            log(`Auto-learning initialized: git hooks=${result.gitHooksInstalled}, agents=${result.agentsInstalled}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'autolearn.processQueue': {
+            if (!this.autoLearn) {
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+            }
+
+            log('Processing auto-learning queue');
+            const results = await this.autoLearn.processQueue();
+
+            log(`Processed ${results.length} auto-learning events`);
+            return { content: [{ type: 'text', text: JSON.stringify({ processed: results.length, results }, null, 2) }] };
+          }
+
+          case 'autolearn.captureCommit': {
+            if (!this.autoLearn) {
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+            }
+
+            const commitHash = (args.commitHash as string) || 'HEAD';
+            log(`Capturing commit: ${commitHash}`);
+
+            const result = await this.autoLearn.captureCommit(commitHash);
+
+            if (result.success) {
+              log(`Commit captured successfully: ${commitHash}`);
+            } else {
+              log(`Failed to capture commit: ${result.error}`);
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'autolearn.installGlobally': {
+            if (!this.autoLearn) {
+              this.autoLearn = new AutoLearnManager(this.memory);
+            }
+
+            log('Installing auto-learning hooks and agents globally');
+            const result = await this.autoLearn.installGlobally();
+
+            log(`Global installation: hooks=${result.hooksInstalled}, agents=${result.agentsInstalled}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
           default:
