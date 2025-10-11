@@ -83,6 +83,9 @@ coverage/
 .llm-memory/autolearn-queue.ndjson
 .git/llm-memory-autolearn.tmp
 
+# Claude Code auto-installed hooks and agents (project-specific)
+.claude/
+
 # Test artifacts
 test-results/
 screenshots/
