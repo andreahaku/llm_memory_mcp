@@ -1,8 +1,14 @@
+/**
+ * @deprecated This is legacy code maintained for backward compatibility only.
+ * Use FileStorageAdapter and MemoryManager instead.
+ * All new code should use the modern storage adapters.
+ */
+
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { readdir } from 'fs/promises';
 import * as path from 'path';
 import { ulid } from '../util/ulid.js';
-import type { Note, NoteType, Scope, SearchQuery, SearchResult } from '../types/KnowledgeBase.js';
+import type { Note, NoteType, Scope, SearchQuery, SearchResult } from './types.js';
 
 export class KnowledgeStore {
   private directory: string;
