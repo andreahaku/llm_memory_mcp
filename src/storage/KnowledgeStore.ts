@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { readdir } from 'fs/promises';
 import * as path from 'path';
-import { ulid } from '../utils/ULID.js';
+import { ulid } from '../util/ulid.js';
 import type { Note, NoteType, Scope, SearchQuery, SearchResult } from '../types/KnowledgeBase.js';
 
 export class KnowledgeStore {
