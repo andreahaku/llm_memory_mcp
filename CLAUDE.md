@@ -231,14 +231,15 @@ pnpm run benchmark
 **Local Embedding Generation** (`src/embeddings/LocalEmbedder.ts`)
 - Offline embedding generation using transformers.js (no external API calls)
 - Three pre-trained models available:
-  - `all-MiniLM-L6-v2`: Fast, 384D, general text (default)
+  - `bge-small-en-v1.5`: Code-optimized, 384D, longer context (512 tokens) - **DEFAULT**
+  - `all-MiniLM-L6-v2`: Fast, 384D, general text
   - `all-mpnet-base-v2`: Higher quality, 768D, semantic similarity
-  - `bge-small-en-v1.5`: Code-optimized, 384D, longer context (512 tokens)
 - Automatic model download and caching (`.cache/transformers`)
-- Singleton pattern for model reuse across requests
+- Instance management per model with proper cleanup on dispose
 - Text truncation based on model's max token limit
-- Batch embedding support for multiple texts
+- True parallel batch embedding using Promise.all
 - Normalized vectors (unit norm) for cosine similarity
+- Async singleton pattern with proper model unloading to prevent memory leaks
 
 **Embedding Storage**:
 - Vectors stored per-scope in `index/vectors.hnsw` (binary HNSW index)
@@ -489,7 +490,7 @@ interface MemoryConfig {
   };
   embeddings?: {
     enabled?: boolean;        // Enable auto-embedding on memory upsert (default: false)
-    model?: string;           // Model key: 'all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5' (default: 'all-MiniLM-L6-v2')
+    model?: string;           // Model key: 'bge-small-en-v1.5' (default), 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'
     indexType?: 'linear' | 'hnsw'; // Vector index type (default: 'hnsw')
     autoGenerate?: boolean;   // Generate embeddings for text+code on upsert (default: true when enabled)
     hnsw?: {
@@ -646,9 +647,9 @@ this.memory.recordAccess(item, 'use', new Date());
 {
   embeddings: {
     enabled: true,
-    model: 'all-MiniLM-L6-v2', // or 'all-mpnet-base-v2' or 'bge-small-en-v1.5'
-    indexType: 'hnsw',         // default, use 'linear' for <1000 vectors
-    autoGenerate: true         // auto-embed on memory upsert
+    model: 'bge-small-en-v1.5', // default - optimized for code (or 'all-MiniLM-L6-v2', 'all-mpnet-base-v2')
+    indexType: 'hnsw',          // default, use 'linear' for <1000 vectors
+    autoGenerate: true          // auto-embed on memory upsert
   }
 }
 ```
@@ -682,7 +683,7 @@ const info = manager.getEmbeddingModelInfo(modelKey);
       enabled: true,
       wBM25: 0.7,    // weight for keyword search
       wVec: 0.3,     // weight for semantic search
-      model: 'all-MiniLM-L6-v2'
+      model: 'bge-small-en-v1.5'  // default - optimized for code
     }
   }
 }
@@ -692,9 +693,9 @@ const info = manager.getEmbeddingModelInfo(modelKey);
 - Use HNSW index for >1000 vectors (default)
 - Increase `efSearch` for better recall (slower search)
 - Increase `M` for better connectivity (more memory)
-- Use `all-MiniLM-L6-v2` for speed (384D)
-- Use `all-mpnet-base-v2` for quality (768D)
-- Use `bge-small-en-v1.5` for code (384D, longer context)
+- Use `bge-small-en-v1.5` for code (384D, longer context) - **RECOMMENDED DEFAULT**
+- Use `all-MiniLM-L6-v2` for general text and speed (384D)
+- Use `all-mpnet-base-v2` for highest quality (768D, slower)
 
 **Testing Embeddings**:
 ```bash
@@ -735,6 +736,41 @@ echo '{"name":"migration.status","arguments":{"scope":"local","backend":"video"}
 ```
 
 ### Known Issues and Fixes
+
+#### Phase 3 Critical Fixes (FIXED in commit 4ce6b96)
+**Date**: 2025-10-11
+**PR**: #9 - Phase 3: Hybrid Search Enhancements
+
+**Critical Issues Addressed**:
+1. **HNSW Persistence Directory Bug** - `src/storage/HNSWVectorIndex.ts:126-129`
+   - Fixed ENOENT errors during index persistence
+   - Now uses `path.dirname()` to create parent directories correctly
+   - Prevents data loss from failed write operations
+
+2. **Memory Leak in MemoryManager** - `src/MemoryManager.ts:1865-1873`
+   - Added embedder cleanup to `dispose()` method
+   - Each model (25-90MB) now properly unloaded on shutdown
+   - Prevents memory accumulation across server restarts
+
+3. **Singleton Model Switching Leak** - `src/embeddings/LocalEmbedder.ts:188-199`
+   - Changed `getDefaultEmbedder()` from sync to async
+   - Old models now properly unloaded before switching
+   - Prevents memory leaks when changing embedding models
+
+4. **Dimension Mismatch Detection** - `src/MemoryManager.ts:456-466`
+   - Added validation when loading vector indexes
+   - Warns when index dimension doesn't match configured model
+   - Provides actionable recovery instructions in warning
+
+5. **True Parallel Batch Embedding** - `src/embeddings/LocalEmbedder.ts:135-137`
+   - Replaced sequential loop with `Promise.all()`
+   - Enables parallel processing of embeddings
+   - Significantly improves batch operation performance
+
+6. **Enhanced Error Handling** - `src/storage/HNSWVectorIndex.ts:77-100`
+   - Added index count validation after loading
+   - Detects corruption via count mismatches
+   - Resets to clean state on load failures
 
 #### Frame Extraction Off-By-One Bug (FIXED in v1.0.1)
 **Symptoms**: Video storage shows correct frame count but items cannot be decoded, or wrong items are returned when querying specific IDs.
@@ -789,9 +825,10 @@ if (hasIndexedItems && !hasCatalogEntries) {
 
 **Embeddings**:
 - `src/embeddings/LocalEmbedder.ts`: Local embedding generation with transformers.js (5.8KB)
-  - Three models: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
-  - Singleton pattern for model reuse
+  - Three models: bge-small-en-v1.5 (384D, default), all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D)
+  - Instance management with proper cleanup to prevent memory leaks
   - Automatic model download and caching
+  - Parallel batch embedding using Promise.all
 
 **Video Storage**:
 - `src/video/VideoEncoder.ts`: Video encoding abstraction
