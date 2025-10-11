@@ -175,7 +175,9 @@ export class ClaudeCodeHooksManager {
           hookContent = readFileSync(globalHookPath, 'utf8');
           log(`Using ${hookName} hook from global: ${globalHookPath}`);
         } else {
-          throw new Error(`Hook source not found: ${hookName}`);
+          // Use embedded fallback content
+          hookContent = this.getEmbeddedHookContent(hookName);
+          log(`Using embedded fallback for ${hookName} hook`);
         }
       }
 
@@ -197,6 +199,90 @@ export class ClaudeCodeHooksManager {
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Get embedded hook content as fallback
+   */
+  private getEmbeddedHookContent(hookName: string): string {
+    const hookTemplates: Record<string, string> = {
+      'session-start': `---
+name: session-start-autolearn
+description: Auto-learning session initialization
+trigger: session-start
+enabled: true
+---
+
+# LLM-MEMORY-AUTO-LEARNING
+# Session Start Hook - Auto-Learning Integration
+
+When starting a new session, automatically:
+
+1. Check if auto-learning system is active
+2. Process any queued auto-learning events from git commits
+3. Surface recently captured knowledge
+
+Use the dev-memory-manager agent to:
+- Process the auto-learning queue
+- Present captured knowledge from recent commits
+- Check hook installation status
+- Install hooks if not present
+`,
+
+      'post-commit': `---
+name: post-commit-autolearn
+description: Auto-learning post-commit notification
+trigger: post-commit
+enabled: true
+---
+
+# LLM-MEMORY-AUTO-LEARNING
+# Post-Commit Hook - Auto-Learning Integration
+
+After a commit is made, this hook:
+
+1. Notifies you if the commit was tagged with #kb for auto-learning
+2. Reminds you to process the queue when convenient
+3. Shows the current queue size
+
+The actual commit capture is handled by the git post-commit hook.
+This Claude Code hook just provides visibility and reminders.
+
+Use the dev-memory-manager agent to process queued commits.
+`,
+
+      'pre-response': `---
+name: pre-response-autolearn
+description: Auto-learning knowledge retrieval
+trigger: pre-response
+enabled: true
+---
+
+# LLM-MEMORY-AUTO-LEARNING
+# Pre-Response Hook - Auto-Learning Integration
+
+Before Claude responds, this hook:
+
+1. Checks if there are relevant auto-learned memories for the current context
+2. Surfaces recently captured patterns and insights
+3. Suggests using the dev-memory-manager agent if relevant knowledge exists
+
+This helps ensure Claude has access to your team's captured development knowledge
+before providing guidance or solutions.
+
+Use the dev-memory-manager agent to:
+- Search for relevant auto-learned patterns
+- Update existing knowledge
+- Capture new insights
+`
+    };
+
+    const content = hookTemplates[hookName];
+    if (!content) {
+      throw new Error(`No embedded template for hook: ${hookName}`);
+    }
+
+    return content;
   }
 
   /**
