@@ -116,7 +116,7 @@ export class LocalEmbedder {
   }
 
   /**
-   * Generate embeddings for multiple texts (batched)
+   * Generate embeddings for multiple texts in parallel (batched)
    */
   async embedBatch(texts: string[]): Promise<number[][]> {
     await this.initialize();
@@ -132,14 +132,9 @@ export class LocalEmbedder {
         text.length > maxChars ? text.slice(0, maxChars) : text
       );
 
-      // Generate embeddings in batch
-      const results: number[][] = [];
-      for (const text of truncatedTexts) {
-        const embedding = await this.embed(text);
-        results.push(embedding);
-      }
-
-      return results;
+      // Generate embeddings in parallel using Promise.all
+      const promises = truncatedTexts.map(text => this.embed(text));
+      return await Promise.all(promises);
     } catch (error) {
       console.error(`[LocalEmbedder] Failed to generate batch embeddings:`, error);
       throw new Error(`Failed to generate batch embeddings: ${error instanceof Error ? error.message : String(error)}`);
@@ -183,9 +178,16 @@ let defaultEmbedder: LocalEmbedder | null = null;
 
 /**
  * Get or create the default embedder instance
+ * Properly unloads the previous model when switching to avoid memory leaks
  */
-export function getDefaultEmbedder(modelKey?: string): LocalEmbedder {
-  if (!defaultEmbedder || (modelKey && defaultEmbedder.getModelInfo().name !== AVAILABLE_MODELS[modelKey]?.name)) {
+export async function getDefaultEmbedder(modelKey?: string): Promise<LocalEmbedder> {
+  const requestedModelName = modelKey ? AVAILABLE_MODELS[modelKey]?.name : AVAILABLE_MODELS['bge-small-en-v1.5'].name;
+
+  if (!defaultEmbedder || defaultEmbedder.getModelInfo().name !== requestedModelName) {
+    // Unload old model before switching to prevent memory leaks
+    if (defaultEmbedder) {
+      await defaultEmbedder.unload();
+    }
     defaultEmbedder = new LocalEmbedder(modelKey);
   }
   return defaultEmbedder;
@@ -195,7 +197,7 @@ export function getDefaultEmbedder(modelKey?: string): LocalEmbedder {
  * Helper function to generate embedding with default embedder
  */
 export async function generateEmbedding(text: string, modelKey?: string): Promise<number[]> {
-  const embedder = getDefaultEmbedder(modelKey);
+  const embedder = await getDefaultEmbedder(modelKey);
   return embedder.embed(text);
 }
 
@@ -203,6 +205,6 @@ export async function generateEmbedding(text: string, modelKey?: string): Promis
  * Helper function to generate batch embeddings with default embedder
  */
 export async function generateEmbeddings(texts: string[], modelKey?: string): Promise<number[][]> {
-  const embedder = getDefaultEmbedder(modelKey);
+  const embedder = await getDefaultEmbedder(modelKey);
   return embedder.embedBatch(texts);
 }

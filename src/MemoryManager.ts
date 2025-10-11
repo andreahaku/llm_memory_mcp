@@ -449,11 +449,23 @@ export class MemoryManager {
       const cfg = this.readConfig(scope, cwd) || undefined;
       const indexType = cfg?.embeddings?.indexType || 'hnsw'; // default to HNSW for better performance
 
-      if (indexType === 'hnsw') {
-        this.vectorIdx[scope] = new HNSWVectorIndex(path.join(dir, 'index'));
-      } else {
-        this.vectorIdx[scope] = new VectorIndex(path.join(dir, 'index'));
+      const index = indexType === 'hnsw'
+        ? new HNSWVectorIndex(path.join(dir, 'index'))
+        : new VectorIndex(path.join(dir, 'index'));
+
+      // Validate dimension compatibility between existing index and configured model
+      if ('getStats' in index && cfg?.embeddings?.model) {
+        const stats = index.getStats();
+        if (stats.dimension) {
+          const embedder = this.getEmbedder(cfg.embeddings.model);
+          const modelDimension = embedder.getDimension();
+          if (stats.dimension !== modelDimension) {
+            log(`WARNING: Vector index dimension (${stats.dimension}) doesn't match model ${cfg.embeddings.model} (${modelDimension}D). Consider rebuilding the index or re-embedding all memories with: memory.query({scope: '${scope}'}, cwd).then(res => Promise.all(res.items.map(it => memory.embedMemory(it.id, '${scope}', cwd))))`);
+          }
+        }
       }
+
+      this.vectorIdx[scope] = index;
     }
     return this.vectorIdx[scope]!;
   }
@@ -1697,9 +1709,9 @@ export class MemoryManager {
    * Get or create an embedder instance for a given model key
    */
   private getEmbedder(modelKey?: string): LocalEmbedder {
-    const key = modelKey || 'all-MiniLM-L6-v2';
+    const key = modelKey || 'bge-small-en-v1.5';
     if (!this.embedders.has(key)) {
-      this.embedders.set(key, getDefaultEmbedder(key));
+      this.embedders.set(key, new LocalEmbedder(key));
     }
     return this.embedders.get(key)!;
   }
@@ -1709,7 +1721,7 @@ export class MemoryManager {
    */
   async generateEmbedding(text: string, scope: MemoryScope, cwd?: string): Promise<number[]> {
     const cfg = this.readConfig(scope, cwd) || undefined;
-    const modelKey = cfg?.embeddings?.model || 'all-MiniLM-L6-v2';
+    const modelKey = cfg?.embeddings?.model || 'bge-small-en-v1.5';
     const embedder = this.getEmbedder(modelKey);
     return await embedder.embed(text);
   }
@@ -1719,7 +1731,7 @@ export class MemoryManager {
    */
   async generateEmbeddings(texts: string[], scope: MemoryScope, cwd?: string): Promise<number[][]> {
     const cfg = this.readConfig(scope, cwd) || undefined;
-    const modelKey = cfg?.embeddings?.model || 'all-MiniLM-L6-v2';
+    const modelKey = cfg?.embeddings?.model || 'bge-small-en-v1.5';
     const embedder = this.getEmbedder(modelKey);
     return await embedder.embedBatch(texts);
   }
@@ -1862,10 +1874,21 @@ export class MemoryManager {
         }
       }
 
+      // Unload all embedder models to free memory
+      for (const [modelKey, embedder] of this.embedders.entries()) {
+        try {
+          await embedder.unload();
+          log(`Unloaded embedder model: ${modelKey}`);
+        } catch (error) {
+          log(`Warning: Failed to unload embedder ${modelKey}:`, error);
+        }
+      }
+
       // Clear all collections
       this.stores = {};
       this.indexers = {};
       this.vectorIdx = {};
+      this.embedders.clear();
       this.queryCache.clear();
       this.indexUpserts = {};
       this.indexDeletes = {};

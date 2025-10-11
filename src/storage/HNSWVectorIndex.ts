@@ -73,6 +73,14 @@ export class HNSWVectorIndex {
         // Try to load existing index
         if (fs.existsSync(this.indexPath)) {
           this.index.readIndex(this.indexPath);
+
+          // Validate index was loaded correctly
+          const currentCount = this.index.getCurrentCount();
+          const mappingCount = Object.keys(this.mapping.idToLabel).length;
+          if (currentCount !== mappingCount) {
+            console.warn(`[HNSWVectorIndex] Index count mismatch: index has ${currentCount}, mapping has ${mappingCount}. This may indicate corruption. Rebuilding may be needed.`);
+          }
+
           this.index.setEf(this.meta.efSearch || DEFAULT_EF_SEARCH);
         } else {
           // Initialize new index
@@ -86,7 +94,10 @@ export class HNSWVectorIndex {
         }
       } catch (error) {
         console.error('[HNSWVectorIndex] Failed to load index:', error);
+        // Reset everything to clean state on corruption
         this.index = null;
+        this.meta = {};
+        this.mapping = { idToLabel: {}, labelToId: {}, nextLabel: 0 };
       }
     }
 
@@ -123,7 +134,10 @@ export class HNSWVectorIndex {
     this.persisting = true;
 
     try {
-      fs.mkdirSync(this.dir, { recursive: true });
+      // Ensure the directory structure exists for all file paths
+      fs.mkdirSync(path.dirname(this.indexPath), { recursive: true });
+      fs.mkdirSync(path.dirname(this.metaPath), { recursive: true });
+      fs.mkdirSync(path.dirname(this.mappingPath), { recursive: true });
 
       // Save HNSW index (binary format)
       const tmpIndex = this.indexPath + '.tmp';
