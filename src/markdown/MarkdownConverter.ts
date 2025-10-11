@@ -7,7 +7,6 @@ import {
   serializeFrontmatter,
   extractFrontmatterFromItem,
   validateFrontmatter,
-  type FrontmatterData,
 } from './FrontmatterParser.js';
 
 /**
@@ -274,7 +273,7 @@ function parseContextSection(content: string): any {
         case 'commit':
           context.commit = value.trim();
           break;
-        case 'file':
+        case 'file': {
           // Check for line range in format: path/to/file.ts (lines 10-20)
           const fileMatch = value.match(/^(.+?)\s*(?:\(lines?\s+(\d+)-(\d+)\))?$/);
           if (fileMatch) {
@@ -287,6 +286,7 @@ function parseContextSection(content: string): any {
             }
           }
           break;
+        }
         case 'function':
           context.function = value.trim();
           break;
