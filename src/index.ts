@@ -1028,7 +1028,7 @@ class LLMKnowledgeBaseServer {
             // If setting storage backend, also update the default backend preference
             if (config?.storage?.backend) {
               const backend = config.storage.backend;
-              if (backend === 'video' || backend === 'file') {
+              if (backend === 'video' || backend === 'file' || backend === 'markdown') {
                 log(`Setting default backend preference to: ${backend}`);
                 this.memory.setDefaultBackend(backend);
               }
@@ -1341,8 +1341,8 @@ class LLMKnowledgeBaseServer {
                 'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
               );
             }
-            const sourceBackend = args.sourceBackend as 'file' | 'video';
-            const targetBackend = args.targetBackend as 'file' | 'video';
+            const sourceBackend = args.sourceBackend as 'file' | 'video' | 'markdown';
+            const targetBackend = args.targetBackend as 'file' | 'video' | 'markdown';
             const scope = args.scope as MemoryScope;
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
@@ -1398,7 +1398,7 @@ class LLMKnowledgeBaseServer {
             const sourceScope = args.sourceScope as MemoryScope;
             const targetScope = args.targetScope as MemoryScope;
             const contentFilter = args.contentFilter as any;
-            const storageBackend = (args.storageBackend as 'file' | 'video') || 'file';
+            const storageBackend = (args.storageBackend as 'file' | 'video' | 'markdown') || 'file';
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
 
@@ -1457,7 +1457,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
 
             log(`Getting migration status: scope=${scope}, backend=${backend}`);
 
@@ -1476,7 +1476,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
             const expectedItems = args.expectedItems as string[] || [];
 
             log(`Validating migration: scope=${scope}, backend=${backend}${expectedItems.length > 0 ? `, checking ${expectedItems.length} items` : ''}`);
