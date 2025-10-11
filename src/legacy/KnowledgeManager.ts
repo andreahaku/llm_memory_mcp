@@ -3,8 +3,14 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { KnowledgeStore } from './storage/KnowledgeStore.js';
-import type { Note, NoteType, Scope, SearchQuery, SearchResult, ProjectInfo } from './types/KnowledgeBase.js';
+/**
+ * @deprecated This is legacy code maintained for backward compatibility only.
+ * Use MemoryManager and Memory types instead.
+ * All new code should use the modern Memory system.
+ */
+
+import { KnowledgeStore } from './KnowledgeStore.js';
+import type { Note, NoteType, Scope, SearchQuery, SearchResult, ProjectInfo } from './types.js';
 
 export class KnowledgeManager {
   private globalStore: KnowledgeStore;
