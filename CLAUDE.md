@@ -217,11 +217,35 @@ pnpm run benchmark
 - Phrase detection and exact match bonuses
 - Automatic index rebuilding on schema changes
 
-**Vector Index** (`src/storage/VectorIndex.ts`)
+**Vector Index** (`src/storage/VectorIndex.ts` and `src/storage/HNSWVectorIndex.ts`)
+- Two implementations: Linear (simple) and HNSW (high-performance)
+- **Linear Index**: O(n) search complexity, suitable for <1000 vectors
+- **HNSW Index** (default): O(log n) search complexity using Hierarchical Navigable Small World graphs
 - Cosine similarity search for semantic matching
 - Dimension consistency enforcement
 - Bulk import from JSONL
 - Hybrid search: weighted blend of BM25 + vector scores
+- ID mapping for hnswlib-node compatibility (string IDs → numeric labels)
+- Configurable HNSW parameters: M (connectivity), efConstruction (build quality), efSearch (search quality)
+
+**Local Embedding Generation** (`src/embeddings/LocalEmbedder.ts`)
+- Offline embedding generation using transformers.js (no external API calls)
+- Three pre-trained models available:
+  - `all-MiniLM-L6-v2`: Fast, 384D, general text (default)
+  - `all-mpnet-base-v2`: Higher quality, 768D, semantic similarity
+  - `bge-small-en-v1.5`: Code-optimized, 384D, longer context (512 tokens)
+- Automatic model download and caching (`.cache/transformers`)
+- Singleton pattern for model reuse across requests
+- Text truncation based on model's max token limit
+- Batch embedding support for multiple texts
+- Normalized vectors (unit norm) for cosine similarity
+
+**Embedding Storage**:
+- Vectors stored per-scope in `index/vectors.hnsw` (binary HNSW index)
+- Metadata in `index/vectors.meta.json` (dimension, count, parameters)
+- ID mapping in `index/vectors.mapping.json` (memory IDs ↔ numeric labels)
+- Auto-embedding on memory upsert when enabled via config
+- Manual embedding via `embeddings.memory` and `embeddings.memories` tools
 
 **Confidence Scoring**:
 - Bayesian feedback integration (helpful/not helpful votes)
@@ -463,6 +487,18 @@ interface MemoryConfig {
       maxMs?: number;   // default: 5000
     };
   };
+  embeddings?: {
+    enabled?: boolean;        // Enable auto-embedding on memory upsert (default: false)
+    model?: string;           // Model key: 'all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5' (default: 'all-MiniLM-L6-v2')
+    indexType?: 'linear' | 'hnsw'; // Vector index type (default: 'hnsw')
+    autoGenerate?: boolean;   // Generate embeddings for text+code on upsert (default: true when enabled)
+    hnsw?: {
+      maxElements?: number;   // Max capacity (default: 10000, auto-resizes by doubling)
+      M?: number;             // HNSW connectivity parameter (default: 16, higher = better recall, more memory)
+      efConstruction?: number; // Build quality (default: 200, higher = better index, slower build)
+      efSearch?: number;      // Search quality (default: 50, higher = better recall, slower search)
+    };
+  };
 }
 ```
 
@@ -603,6 +639,72 @@ this.memory.recordAccess(item, 'use', new Date());
 4. Update `docs/CLAUDE.md` configuration section
 5. Test with various queries and compare results
 
+### Using Local Embeddings and Hybrid Search
+**Enable Auto-Embedding**:
+```typescript
+// Via project.config.set MCP tool
+{
+  embeddings: {
+    enabled: true,
+    model: 'all-MiniLM-L6-v2', // or 'all-mpnet-base-v2' or 'bge-small-en-v1.5'
+    indexType: 'hnsw',         // default, use 'linear' for <1000 vectors
+    autoGenerate: true         // auto-embed on memory upsert
+  }
+}
+```
+
+**Manual Embedding**:
+```typescript
+// Embed a single memory
+await manager.embedMemory(memoryId, scope);
+
+// Batch embed multiple memories
+await manager.embedMemories([id1, id2, id3], scope);
+
+// Generate embedding for raw text
+const vector = await manager.embedText(text, modelKey);
+
+// Get model information
+const info = manager.getEmbeddingModelInfo(modelKey);
+```
+
+**MCP Tools**:
+- `embeddings.text`: Generate embedding for raw text
+- `embeddings.memory`: Embed a memory item by ID
+- `embeddings.memories`: Batch embed multiple memories
+- `embeddings.modelInfo`: Get model information
+
+**Hybrid Search Configuration**:
+```typescript
+{
+  ranking: {
+    hybrid: {
+      enabled: true,
+      wBM25: 0.7,    // weight for keyword search
+      wVec: 0.3,     // weight for semantic search
+      model: 'all-MiniLM-L6-v2'
+    }
+  }
+}
+```
+
+**Performance Tuning**:
+- Use HNSW index for >1000 vectors (default)
+- Increase `efSearch` for better recall (slower search)
+- Increase `M` for better connectivity (more memory)
+- Use `all-MiniLM-L6-v2` for speed (384D)
+- Use `all-mpnet-base-v2` for quality (768D)
+- Use `bge-small-en-v1.5` for code (384D, longer context)
+
+**Testing Embeddings**:
+```bash
+# Run embedding functionality tests
+node test-embeddings.js
+
+# Check embedding storage
+ls -lh ~/.llm-memory/projects/*/index/vectors.*
+```
+
 ### Debugging Video Storage Issues
 ```bash
 # Enable debug logging
@@ -682,7 +784,14 @@ if (hasIndexedItems && !hasCatalogEntries) {
 - `src/storage/VideoStorageAdapter.ts`: Video backend implementation (48KB)
 - `src/storage/fileStore.ts`: Low-level file operations (26KB)
 - `src/storage/Indexer.ts`: BM25 search indexing (5.9KB)
-- `src/storage/VectorIndex.ts`: Vector similarity search (4.4KB)
+- `src/storage/VectorIndex.ts`: Linear vector index (O(n) search, 4.4KB)
+- `src/storage/HNSWVectorIndex.ts`: HNSW vector index (O(log n) search, 9.0KB)
+
+**Embeddings**:
+- `src/embeddings/LocalEmbedder.ts`: Local embedding generation with transformers.js (5.8KB)
+  - Three models: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
+  - Singleton pattern for model reuse
+  - Automatic model download and caching
 
 **Video Storage**:
 - `src/video/VideoEncoder.ts`: Video encoding abstraction
