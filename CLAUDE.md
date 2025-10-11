@@ -808,6 +808,240 @@ if (hasIndexedItems && !hasCatalogEntries) {
 
 **Prevention**: The fix ensures catalog is automatically rebuilt from the video index if it gets corrupted or deleted.
 
+## Auto-Learning System
+
+The auto-learning system automatically captures development knowledge from git commits tagged with `#kb` and integrates it into the memory system. See `docs/AUTO_LEARNING.md` for comprehensive user documentation.
+
+### Architecture
+
+**AutoLearnManager** (`src/autolearn/AutoLearnManager.ts` - 301 lines)
+- Central coordinator for all auto-learning functionality
+- Orchestrates hook installation and event processing
+- Integrates with MemoryManager for persistence
+- Provides MCP tool interface
+
+**AutoLearner** (`src/autolearn/AutoLearner.ts` - 540 lines)
+- Core event processing and materialization logic
+- Classifies commits by type (fix → insight, refactor → pattern, test → snippet)
+- Applies filters (minLinesChanged, file patterns)
+- Extracts symbols and context
+- Converts git events into searchable MemoryItems
+
+**GitHooksManager** (`src/autolearn/GitHooksManager.ts` - 427 lines)
+- Installs git hooks (`commit-msg`, `post-commit`)
+- Parses commit messages for `#kb` tags
+- Queues events in `.llm-memory/autolearn-queue.ndjson`
+- Extracts commit metadata and diffs
+- Detects symbols (function/class names) from diffs
+
+**ClaudeCodeHooksManager** (`src/autolearn/ClaudeCodeHooks.ts` - 238 lines)
+- Installs Claude Code hooks (session-start, post-commit, pre-response)
+- Copies from project `/hooks/` directory (source of truth)
+- Supports both project (`.claude/hooks/`) and global (`~/.claude/hooks/`) installation
+- Auto-creates `.claudeignore` for queue files
+
+**ClaudeCodeAgentsManager** (`src/autolearn/ClaudeCodeAgents.ts` - 230 lines)
+- Installs dev-memory-manager agent
+- Copies from project `/agents/` directory
+- Supports project and global installation
+- Provides fallback minimal agent if source missing
+
+### MCP Integration
+
+**5 New MCP Tools** (src/index.ts:742-789, 1687-1758):
+- `autolearn.status` — Get system status, hook installation state, queue size
+- `autolearn.init` — Initialize auto-learning for current project (auto-install hooks)
+- `autolearn.processQueue` — Process queued events from git commits
+- `autolearn.captureCommit` — Manually capture a specific commit by hash
+- `autolearn.installGlobally` — Install hooks and agents to `~/.claude/` directory
+
+**Automatic Initialization** (src/index.ts:75-90):
+The MCP server auto-initializes auto-learning on client connect:
+1. Detects project via `MemoryManager.getProjectInfo()`
+2. Creates `AutoLearnManager` instance
+3. Calls `initialize(projectRoot, autoInstall=true)`
+4. Logs success/failure status with emojis
+5. Non-blocking with graceful error handling
+6. Only initializes once per project
+
+### Event Flow
+
+**1. Commit with #kb Tag:**
+```bash
+git commit -m "Implement JWT authentication #kb #security"
+```
+
+**2. Git Hook Captures Event:**
+- `commit-msg` hook detects `#kb` tag
+- `post-commit` hook captures:
+  - Commit hash, message, author, date
+  - Full diff of changes
+  - File paths and line counts
+  - Extracted symbols (functions, classes)
+  - Additional hashtags from message
+
+**3. Event Queued:**
+```json
+{
+  "type": "commit",
+  "hash": "a1b2c3d",
+  "message": "Implement JWT authentication #kb #security",
+  "diff": "...",
+  "timestamp": "2025-10-11T20:00:00Z",
+  "files": ["src/auth.ts"],
+  "symbols": ["verifyToken", "refreshToken"],
+  "tags": ["kb", "security"]
+}
+```
+
+**4. Event Materialization:**
+- AutoLearner reads queue
+- Applies filters (minLinesChanged, file patterns)
+- Classifies commit type:
+  - "fix" → `insight` memory
+  - "refactor" → `pattern` memory
+  - "test" → `snippet` memory
+  - "add"/"implement" → `snippet` memory
+  - default → `note` memory
+- Extracts code from diff
+- Creates MemoryItem with:
+  - Type based on commit message
+  - Title from commit summary
+  - Text from commit body
+  - Code from diff
+  - Tags from hashtags
+  - Files and symbols from context
+  - Automatic secret redaction
+
+**5. Memory Searchable:**
+```typescript
+memory.query({
+  q: "JWT authentication",
+  scope: "project",
+  k: 10
+})
+// Returns the captured knowledge
+```
+
+### Development Patterns
+
+**Event Materialization Pattern:**
+```typescript
+// Git event from queue
+const event = {
+  type: 'fix',
+  context: {
+    files: ['src/auth.ts'],
+    symbols: ['verifyToken'],
+    summary: 'Fixed JWT expiration check',
+    tags: ['auth', 'security'],
+    diff: '...'
+  }
+};
+
+// AutoLearner materializes to MemoryItem
+const memory = {
+  type: 'insight',  // 'fix' → 'insight'
+  title: 'Fixed JWT expiration check',
+  text: event.context.summary,
+  code: extractCodeFromDiff(event.context.diff),
+  facets: {
+    tags: ['auth', 'security', 'fix'],
+    files: ['src/auth.ts'],
+    symbols: ['verifyToken']
+  },
+  scope: 'local',
+  quality: { confidence: 0.7 },  // Default for auto-learned
+  security: { sensitivity: 'private' }
+};
+```
+
+**Configuration (AutoLearnConfig):**
+```typescript
+interface AutoLearnConfig {
+  enabled: boolean;
+  captureTypes: ('commit' | 'fix' | 'refactor' | 'pattern')[];
+  gitHooks: {
+    enabled: boolean;
+    tagPattern: string;      // default: '#kb'
+    captureDiffs: boolean;
+    maxDiffSize: number;     // default: 10000
+  };
+  filters: {
+    minLinesChanged: number;  // default: 5
+    includePatterns: string[];  // default: ['**/*.ts', '**/*.js']
+    excludePatterns: string[];  // default: ['**/node_modules/**', '**/dist/**']
+  };
+  storage: {
+    autoCommit: boolean;      // default: false
+    scope: MemoryScope;       // default: 'local'
+    defaultType: MemoryType;  // default: 'snippet'
+  };
+  insights: {
+    enabled: boolean;         // default: true
+    minOccurrences: number;   // default: 3 (for pattern detection)
+  };
+}
+```
+
+### Testing Auto-Learning
+
+**Check Installation:**
+```bash
+# Git hooks
+ls -la .git/hooks/ | grep -E '(commit-msg|post-commit)'
+chmod +x .git/hooks/commit-msg .git/hooks/post-commit
+
+# Claude Code hooks
+ls -la .claude/hooks/
+ls -la ~/.claude/hooks/
+
+# Queue file
+cat .llm-memory/autolearn-queue.ndjson
+```
+
+**Test via MCP:**
+```bash
+# Check status
+echo '{"name":"autolearn.status","arguments":{}}' | node dist/index.js
+
+# Process queue
+echo '{"name":"autolearn.processQueue","arguments":{}}' | node dist/index.js
+
+# Capture specific commit
+echo '{"name":"autolearn.captureCommit","arguments":{"commitHash":"HEAD"}}' | node dist/index.js
+```
+
+### Important Auto-Learning Files
+
+**Core Implementation:**
+- `src/autolearn/AutoLearnManager.ts`: Central coordinator (301 lines)
+- `src/autolearn/AutoLearner.ts`: Event processing logic (540 lines)
+- `src/autolearn/GitHooksManager.ts`: Git hook management (427 lines)
+- `src/autolearn/ClaudeCodeHooks.ts`: Claude Code hook installation (238 lines)
+- `src/autolearn/ClaudeCodeAgents.ts`: Agent installation (230 lines)
+- `src/types/AutoLearning.ts`: Type definitions
+
+**Hook Templates (Source of Truth):**
+- `/hooks/session-start.md`: Claude Code session initialization hook
+- `/hooks/post-commit.md`: Commit notification hook
+- `/hooks/pre-response.md`: Knowledge retrieval hook
+- `/agents/dev-memory-manager.md`: Enhanced agent with auto-learning
+
+**Installed Hooks:**
+- `.git/hooks/commit-msg`: Detects `#kb` tags (project-specific)
+- `.git/hooks/post-commit`: Captures commit events (project-specific)
+- `.claude/hooks/*.md`: Claude Code hooks (project or global)
+- `.claude/agents/dev-memory-manager.md`: Enhanced agent (project or global)
+
+**Queue Files:**
+- `.llm-memory/autolearn-queue.ndjson`: Event queue (not committed)
+- `.git/llm-memory-autolearn.tmp`: Git hook temp file (not committed)
+- `.claudeignore`: Auto-created to exclude queue files
+
+**Documentation:**
+- `docs/AUTO_LEARNING.md`: Comprehensive user guide (251 lines)
+
 ## Important Files Reference
 
 **Core Server**:
