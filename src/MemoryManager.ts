@@ -8,6 +8,8 @@ import type { StorageAdapter, StorageAdapterFactory } from './storage/StorageAda
 import { FileStorageAdapterFactory } from './storage/FileStorageAdapter.js';
 import { InvertedIndexer } from './storage/Indexer.js';
 import { VectorIndex } from './storage/VectorIndex.js';
+import { HNSWVectorIndex } from './storage/HNSWVectorIndex.js';
+import { LocalEmbedder, getDefaultEmbedder } from './embeddings/LocalEmbedder.js';
 import { redactSecrets } from './utils/secretFilter.js';
 import { estimateTokens, allowedCharsForTokens } from './utils/tokenEstimate.js';
 import { LRU } from './utils/lru.js';
@@ -37,7 +39,8 @@ export class MemoryManager {
   // Lazily created per-scope stores
   private stores: Partial<Record<MemoryScope, StorageAdapter>> = {};
   private indexers: Partial<Record<MemoryScope, InvertedIndexer>> = {};
-  private vectorIdx: Partial<Record<MemoryScope, VectorIndex>> = {};
+  private vectorIdx: Partial<Record<MemoryScope, VectorIndex | HNSWVectorIndex>> = {};
+  private embedders: Map<string, LocalEmbedder> = new Map(); // model key -> embedder instance
   private queryCache = new LRU<string, MemorySearchResult>(100);
   private indexUpserts: Partial<Record<MemoryScope, Map<string, MemoryItem>>> = {};
   private indexDeletes: Partial<Record<MemoryScope, Set<string>>> = {};
@@ -440,10 +443,29 @@ export class MemoryManager {
     return this.indexers[scope]!;
   }
 
-  private getVectorIndex(scope: MemoryScope, cwd?: string): VectorIndex {
+  private getVectorIndex(scope: MemoryScope, cwd?: string): VectorIndex | HNSWVectorIndex {
     if (!this.vectorIdx[scope]) {
       const dir = this.resolver.getScopeDirectory(scope, cwd);
-      this.vectorIdx[scope] = new VectorIndex(path.join(dir, 'index'));
+      const cfg = this.readConfig(scope, cwd) || undefined;
+      const indexType = cfg?.embeddings?.indexType || 'hnsw'; // default to HNSW for better performance
+
+      const index = indexType === 'hnsw'
+        ? new HNSWVectorIndex(path.join(dir, 'index'))
+        : new VectorIndex(path.join(dir, 'index'));
+
+      // Validate dimension compatibility between existing index and configured model
+      if ('getStats' in index && cfg?.embeddings?.model) {
+        const stats = index.getStats();
+        if (stats.dimension) {
+          const embedder = this.getEmbedder(cfg.embeddings.model);
+          const modelDimension = embedder.getDimension();
+          if (stats.dimension !== modelDimension) {
+            log(`WARNING: Vector index dimension (${stats.dimension}) doesn't match model ${cfg.embeddings.model} (${modelDimension}D). Consider rebuilding the index or re-embedding all memories with: memory.query({scope: '${scope}'}, cwd).then(res => Promise.all(res.items.map(it => memory.embedMemory(it.id, '${scope}', cwd))))`);
+          }
+        }
+      }
+
+      this.vectorIdx[scope] = index;
     }
     return this.vectorIdx[scope]!;
   }
@@ -591,6 +613,11 @@ export class MemoryManager {
     if (currentStorageBackend !== 'video') {
       this.scheduleIndexUpsert(item.scope, item);
     }
+
+    // Auto-embed if enabled for this scope (non-blocking)
+    this.autoEmbedIfEnabled(item, item.scope).catch(err => {
+      log(`Auto-embedding failed for ${id}, continuing anyway:`, err);
+    });
 
     log(`Memory upsert completed successfully: ${id}`);
     return item.id;
@@ -1679,6 +1706,116 @@ export class MemoryManager {
   }
 
   /**
+   * Get or create an embedder instance for a given model key
+   */
+  private getEmbedder(modelKey?: string): LocalEmbedder {
+    const key = modelKey || 'bge-small-en-v1.5';
+    if (!this.embedders.has(key)) {
+      this.embedders.set(key, new LocalEmbedder(key));
+    }
+    return this.embedders.get(key)!;
+  }
+
+  /**
+   * Generate embedding for text using the configured model for a scope
+   */
+  async generateEmbedding(text: string, scope: MemoryScope, cwd?: string): Promise<number[]> {
+    const cfg = this.readConfig(scope, cwd) || undefined;
+    const modelKey = cfg?.embeddings?.model || 'bge-small-en-v1.5';
+    const embedder = this.getEmbedder(modelKey);
+    return await embedder.embed(text);
+  }
+
+  /**
+   * Generate embeddings for multiple texts in batch
+   */
+  async generateEmbeddings(texts: string[], scope: MemoryScope, cwd?: string): Promise<number[][]> {
+    const cfg = this.readConfig(scope, cwd) || undefined;
+    const modelKey = cfg?.embeddings?.model || 'bge-small-en-v1.5';
+    const embedder = this.getEmbedder(modelKey);
+    return await embedder.embedBatch(texts);
+  }
+
+  /**
+   * Auto-embed a memory item if embeddings are enabled for the scope
+   */
+  private async autoEmbedIfEnabled(item: MemoryItem, scope: MemoryScope, cwd?: string): Promise<void> {
+    const cfg = this.readConfig(scope, cwd) || undefined;
+    if (!cfg?.embeddings?.enabled) return;
+    if (cfg.embeddings.autoGenerate === false) return;
+
+    // Combine text and code for embedding
+    const content = [item.title, item.text, item.code].filter(Boolean).join('\n\n');
+    if (!content.trim()) return;
+
+    try {
+      const embedding = await this.generateEmbedding(content, scope, cwd);
+      const vectorIndex = this.getVectorIndex(scope, cwd);
+      vectorIndex.set(item.id, embedding);
+      log(`Auto-generated and stored embedding for memory ${item.id} (${embedding.length}D)`);
+    } catch (error) {
+      log(`Failed to auto-generate embedding for memory ${item.id}:`, error);
+      // Don't throw - embedding failures shouldn't block memory creation
+    }
+  }
+
+  /**
+   * Manually embed a memory item by ID
+   */
+  async embedMemory(id: string, scope?: MemoryScope, cwd?: string): Promise<{ id: string; dimension: number; success: boolean; error?: string }> {
+    try {
+      const item = await this.get(id, scope, cwd);
+      if (!item) {
+        return { id, dimension: 0, success: false, error: 'Memory not found' };
+      }
+
+      const content = [item.title, item.text, item.code].filter(Boolean).join('\n\n');
+      if (!content.trim()) {
+        return { id, dimension: 0, success: false, error: 'No content to embed' };
+      }
+
+      const embedding = await this.generateEmbedding(content, item.scope, cwd);
+      const vectorIndex = this.getVectorIndex(item.scope, cwd);
+      vectorIndex.set(item.id, embedding);
+
+      log(`Manually embedded memory ${id} (${embedding.length}D)`);
+      return { id, dimension: embedding.length, success: true };
+    } catch (error: any) {
+      return { id, dimension: 0, success: false, error: error.message || String(error) };
+    }
+  }
+
+  /**
+   * Batch embed multiple memories
+   */
+  async embedMemories(ids: string[], scope?: MemoryScope, cwd?: string): Promise<Array<{ id: string; dimension: number; success: boolean; error?: string }>> {
+    const results: Array<{ id: string; dimension: number; success: boolean; error?: string }> = [];
+
+    for (const id of ids) {
+      const result = await this.embedMemory(id, scope, cwd);
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  /**
+   * Embed raw text and return the vector (for testing or external use)
+   */
+  async embedText(text: string, modelKey?: string): Promise<number[]> {
+    const embedder = this.getEmbedder(modelKey);
+    return await embedder.embed(text);
+  }
+
+  /**
+   * Get embedding model information
+   */
+  getEmbeddingModelInfo(modelKey?: string): { name: string; dimension: number; maxTokens: number; description: string } {
+    const embedder = this.getEmbedder(modelKey);
+    return embedder.getModelInfo();
+  }
+
+  /**
    * Gracefully dispose of all resources and cleanup timers, watchers, and storage adapters.
    * This method ensures proper resource cleanup during server shutdown.
    */
@@ -1737,10 +1874,21 @@ export class MemoryManager {
         }
       }
 
+      // Unload all embedder models to free memory
+      for (const [modelKey, embedder] of this.embedders.entries()) {
+        try {
+          await embedder.unload();
+          log(`Unloaded embedder model: ${modelKey}`);
+        } catch (error) {
+          log(`Warning: Failed to unload embedder ${modelKey}:`, error);
+        }
+      }
+
       // Clear all collections
       this.stores = {};
       this.indexers = {};
       this.vectorIdx = {};
+      this.embedders.clear();
       this.queryCache.clear();
       this.indexUpserts = {};
       this.indexDeletes = {};

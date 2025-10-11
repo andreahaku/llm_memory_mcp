@@ -333,6 +333,56 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'embeddings.text',
+          description: 'Generate embedding vector for raw text using local transformers.js model',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'Text to embed' },
+              model: { type: 'string', description: 'Optional model key (default: all-MiniLM-L6-v2)', enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5'] }
+            },
+            required: ['text'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.memory',
+          description: 'Generate and store embedding for a specific memory item by ID',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Memory item ID to embed' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' }
+            },
+            required: ['id'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.memories',
+          description: 'Batch generate and store embeddings for multiple memory items',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              ids: { type: 'array', items: { type: 'string' }, description: 'Array of memory item IDs to embed' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' }
+            },
+            required: ['ids'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.modelInfo',
+          description: 'Get information about available embedding models',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              model: { type: 'string', description: 'Optional model key to get info for', enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5'] }
+            },
+            additionalProperties: false
+          },
+        },
+        {
           name: 'memory.get',
           description: 'Fetch a memory item by id',
           inputSchema: {
@@ -987,6 +1037,61 @@ class LLMKnowledgeBaseServer {
             const dim = args.dim as number | undefined;
             const res = this.memory.importVectorsFromJsonl(scope, args.path as string, dim);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+          }
+
+          case 'embeddings.text': {
+            const text = args.text as string;
+            const model = args.model as string | undefined;
+
+            log(`Generating embedding: text length=${text.length}${model ? `, model=${model}` : ''}`);
+
+            const embedding = await this.memory.embedText(text, model);
+
+            log(`Embedding generated: dimension=${embedding.length}`);
+            return { content: [{ type: 'text', text: JSON.stringify({ embedding, dimension: embedding.length }, null, 2) }] };
+          }
+
+          case 'embeddings.memory': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Embedding memory: id=${id}${scope ? `, scope=${scope}` : ''}`);
+
+            const result = await this.memory.embedMemory(id, scope);
+
+            if (!result.success) {
+              log(`Failed to embed memory: id=${id}, error=${result.error}`);
+              throw new McpError(ErrorCode.InternalError, result.error || 'Failed to embed memory');
+            }
+
+            log(`Memory embedded successfully: id=${id}, dimension=${result.dimension}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'embeddings.memories': {
+            const ids = args.ids as string[];
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Batch embedding memories: count=${ids.length}${scope ? `, scope=${scope}` : ''}`);
+
+            const results = await this.memory.embedMemories(ids, scope);
+
+            const successCount = results.filter(r => r.success).length;
+            const failCount = results.length - successCount;
+
+            log(`Batch embedding completed: ${successCount} succeeded, ${failCount} failed`);
+            return { content: [{ type: 'text', text: JSON.stringify({ total: results.length, succeeded: successCount, failed: failCount, results }, null, 2) }] };
+          }
+
+          case 'embeddings.modelInfo': {
+            const model = args.model as string | undefined;
+
+            log(`Getting model info${model ? `: model=${model}` : ''}`);
+
+            const info = this.memory.getEmbeddingModelInfo(model);
+
+            log(`Model info retrieved: ${info.name}, dimension=${info.dimension}`);
+            return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] };
           }
 
           case 'memory.contextPack': {
