@@ -26,7 +26,26 @@ async function loadVideoStorageAdapterFactory() {
   return VideoStorageAdapterFactory;
 }
 
-export type StorageBackend = 'file' | 'video';
+// Dynamic import for markdown storage
+let MarkdownStorageAdapterFactory: any = null;
+async function loadMarkdownStorageAdapterFactory() {
+  if (!MarkdownStorageAdapterFactory) {
+    try {
+      log('🔄 Loading MarkdownStorageAdapterFactory...');
+      const markdownModule = await import('../storage/MarkdownStorageAdapter.js');
+      MarkdownStorageAdapterFactory = markdownModule.MarkdownStorageAdapterFactory;
+      log('✅ MarkdownStorageAdapterFactory loaded successfully');
+      return MarkdownStorageAdapterFactory;
+    } catch (error) {
+      console.warn('[MigrationManager] ❌ Markdown storage adapter not available:', (error as Error).message);
+      return null;
+    }
+  }
+  log('✅ MarkdownStorageAdapterFactory already cached');
+  return MarkdownStorageAdapterFactory;
+}
+
+export type StorageBackend = 'file' | 'video' | 'markdown';
 
 export interface MigrationProgress {
   phase: string;
@@ -76,7 +95,7 @@ export interface MigrationValidationResult {
 }
 
 /**
- * MigrationManager handles both storage backend migrations (file ↔ video)
+ * MigrationManager handles both storage backend migrations (file ↔ video ↔ markdown)
  * and scope migrations (global ↔ local ↔ committed) with intelligent filtering
  */
 export class MigrationManager {
@@ -102,11 +121,21 @@ export class MigrationManager {
       return new VideoFactory();
     }
 
+    if (backend === 'markdown') {
+      log('📝 Requesting markdown storage factory...');
+      const MarkdownFactory = await loadMarkdownStorageAdapterFactory();
+      if (!MarkdownFactory) {
+        throw new Error('Markdown storage backend is not available. Required dependencies may not be installed or failed to load.');
+      }
+      log('🏭 Creating MarkdownStorageAdapterFactory instance...');
+      return new MarkdownFactory();
+    }
+
     throw new Error(`Unknown storage backend: ${backend}`);
   }
 
   /**
-   * Migrate storage backend (file ↔ video) within the same scope
+   * Migrate storage backend (file ↔ video ↔ markdown) within the same scope
    */
   async migrateStorageBackend(options: StorageMigrationOptions): Promise<MigrationValidationResult> {
     const {

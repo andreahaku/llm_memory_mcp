@@ -589,12 +589,12 @@ class LLMKnowledgeBaseServer {
         },
         {
           name: 'migration.storage_backend',
-          description: 'Migrate storage between file and video backends within same scope',
+          description: 'Migrate storage between file, video, and markdown backends within same scope',
           inputSchema: {
             type: 'object',
             properties: {
-              sourceBackend: { type: 'string', enum: ['file', 'video'] },
-              targetBackend: { type: 'string', enum: ['file', 'video'] },
+              sourceBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
+              targetBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
@@ -633,7 +633,7 @@ class LLMKnowledgeBaseServer {
                 },
                 additionalProperties: false
               },
-              storageBackend: { type: 'string', enum: ['file', 'video'], description: 'Storage backend to use' },
+              storageBackend: { type: 'string', enum: ['file', 'video', 'markdown'], description: 'Storage backend to use' },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
             },
@@ -648,7 +648,7 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
             },
             required: ['scope', 'backend'],
             additionalProperties: false,
@@ -661,7 +661,7 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
             },
             required: ['scope', 'backend'],
