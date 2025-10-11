@@ -242,6 +242,14 @@ MARKER_FILE=".git/llm-memory-autolearn.tmp"
 if [ -f "$MARKER_FILE" ]; then
   echo "[llm-memory] Capturing commit for auto-learning..."
 
+  # Check for jq availability
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[llm-memory] Warning: jq not found - auto-learning requires jq for safe JSON handling"
+    echo "[llm-memory] Install jq: https://stedolan.github.io/jq/"
+    rm -f "$MARKER_FILE"
+    exit 0
+  fi
+
   # Get commit info
   COMMIT_HASH=$(git rev-parse HEAD)
   COMMIT_MSG=$(cat "$MARKER_FILE")
@@ -253,22 +261,18 @@ if [ -f "$MARKER_FILE" ]; then
   QUEUE_FILE=".llm-memory/autolearn-queue.ndjson"
   mkdir -p ".llm-memory"
 
-  # Create JSON entry
-  cat > "$MARKER_FILE.json" << EOF
-{
-  "type": "commit",
-  "hash": "$COMMIT_HASH",
-  "message": $(echo "$COMMIT_MSG" | jq -Rs .),
-  "diff": $(echo "$DIFF" | jq -Rs .),
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
-
-  # Append to queue
-  cat "$MARKER_FILE.json" >> "$QUEUE_FILE"
+  # Create JSON entry using jq for safe escaping (prevents shell injection)
+  jq -n \\
+    --arg type "commit" \\
+    --arg hash "$COMMIT_HASH" \\
+    --arg message "$COMMIT_MSG" \\
+    --arg diff "$DIFF" \\
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
+    '{type: $type, hash: $hash, message: $message, diff: $diff, timestamp: $timestamp}' \\
+    >> "$QUEUE_FILE"
 
   # Cleanup
-  rm -f "$MARKER_FILE" "$MARKER_FILE.json"
+  rm -f "$MARKER_FILE"
 
   echo "[llm-memory] Commit queued for auto-learning processing"
 fi
@@ -402,6 +406,7 @@ exit 0
 
   /**
    * Read and clear the auto-learn queue
+   * Uses atomic rename to prevent race conditions
    */
   async readQueue(): Promise<any[]> {
     const queuePath = path.join(this.projectRoot, '.llm-memory', 'autolearn-queue.ndjson');
@@ -411,12 +416,28 @@ exit 0
     }
 
     try {
-      const content = readFileSync(queuePath, 'utf8');
+      // Use atomic rename to claim the queue
+      const tempPath = `${queuePath}.processing-${Date.now()}`;
+      const fs = await import('fs/promises');
+
+      try {
+        await fs.rename(queuePath, tempPath);
+      } catch (error) {
+        // Queue was already claimed by another process or doesn't exist
+        return [];
+      }
+
+      // Read from the temp file
+      const content = readFileSync(tempPath, 'utf8');
       const lines = content.trim().split('\n').filter(line => line);
       const entries = lines.map(line => JSON.parse(line));
 
-      // Clear the queue
-      writeFileSync(queuePath, '');
+      // Clean up temp file
+      try {
+        await fs.unlink(tempPath);
+      } catch (error) {
+        log('Failed to delete temp queue file:', error);
+      }
 
       return entries;
     } catch (error) {
