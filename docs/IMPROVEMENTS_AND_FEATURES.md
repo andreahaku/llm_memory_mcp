@@ -6,17 +6,18 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
 
 ## Shipped To Date
 
-- Memory-first server
-  - Replaced legacy kb.* with memory.* tools (upsert/get/delete/list/query/link/pin/unpin/tag).
-  - Added project.initCommitted, project.config.get/set, maintenance.rebuild.
-  - New resources: kb://project/info, kb://health, kb://context/pack.
+- **Phase 1: Memory-First Architecture & Core Foundation** ✅ **COMPLETED**
+  - Replaced legacy kb.* with memory.* tools (upsert/get/delete/list/query/link/pin/unpin/tag)
+  - Added project.initCommitted, project.config.get/set, maintenance.rebuild
+  - New resources: kb://project/info, kb://health, kb://context/pack
+  - ULID consolidation and dead code removal (commit 084924e)
 
-- Storage, indexing, and reliability
-  - Atomic writes for items and catalog via tmp+rename.
-  - Rebuildable catalog and inverted index from on-disk items.
-  - Inverted index with BM25 scoring (doc lengths, idf) and per-field weights.
-  - Secret redaction on ingestion (common API key patterns) with secretHashRefs.
-  - Journal-first writes; async/debounced catalog updates; startup journal replay.
+- **Phase 2: Storage, Indexing & Reliability** ✅ **COMPLETED**
+  - Atomic writes for items and catalog via tmp+rename
+  - Rebuildable catalog and inverted index from on-disk items
+  - Inverted index with BM25 scoring (doc lengths, idf) and per-field weights
+  - Secret redaction on ingestion (common API key patterns) with secretHashRefs
+  - Journal-first writes; async/debounced catalog updates; startup journal replay
   - Compaction options:
     - Threshold-based (maintenance.compactEvery; default: 500)
     - Time-based (maintenance.compactIntervalMs; default: 24h)
@@ -25,20 +26,34 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
     - Snapshot meta (lastTs + checksum) for fast tail replay
     - state-ok marker written after verified consistency
     - maintenance.snapshot to force snapshot; maintenance.verify to check snapshot/state-ok vs current
+  - **Markdown Storage Backend** ✅ **COMPLETED** (PR #8, Merged 2025-10-11)
+    - Human-readable markdown storage with YAML frontmatter
+    - Project-based subfolder organization (_LLM_memories/<project>/)
+    - Bidirectional migration support: file ↔ video ↔ markdown
+    - Filename format: `<id>-<slug>.md` for stable references
+    - Structured sections: frontmatter, title, description, code, context, related memories, backlinks
+    - Full feature parity with file and video backends
+    - Seamless Obsidian and markdown tool integration
+    - Dependencies: js-yaml@^4.1.0, @types/js-yaml@^4.0.9
 
-- Ranking and tuning
-  - Scope, pin, and recency boosts integrated into search ranking.
-  - Phrase bonuses and exact-title bonus layered atop BM25 for coding UX.
-  - Per-scope tuning via config.json: fieldWeights, bm25, scopeBonus, pinBonus, recency, phrase.
+- **Ranking & Search Tuning** ✅ **COMPLETED**
+  - Scope, pin, and recency boosts integrated into search ranking
+  - Phrase bonuses and exact-title bonus layered atop BM25 for coding UX
+  - Per-scope tuning via config.json: fieldWeights, bm25, scopeBonus, pinBonus, recency, phrase
   - Hybrid vector search (optional) with weighted blending:
     - ranking.hybrid { enabled, wBM25, wVec, model }
-    - vectors.set / vectors.remove tools; vector store in index/vectors.json
+    - vectors.set / vectors.remove tools; vector store in index/vectors.hnsw
     - Bulk import vectors: vectors.importBulk and vectors.importJsonl (JSONL), with dimension enforcement
-  - LRU query cache; invalidation on writes/compaction.
+  - LRU query cache (100 entries); invalidation on writes/compaction
+  - Intelligent confidence scoring with Bayesian feedback integration
+  - Exponential time decay for usage and recency signals
 
-- **Phase 3: Local Embeddings & HNSW Vector Search** ✅ **COMPLETED**
+- **Phase 3: Local Embeddings & HNSW Vector Search** ✅ **COMPLETED** (PR #9, Merged 2025-10-11)
   - Local embedding generation using transformers.js (offline, no external APIs)
-  - Three embedding models: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
+  - Three embedding models with bge-small-en-v1.5 (384D) as default for code optimization
+    - bge-small-en-v1.5: Code-optimized, 384D, 512 token context (DEFAULT)
+    - all-MiniLM-L6-v2: Fast general text, 384D, 256 token context
+    - all-mpnet-base-v2: High quality semantic, 768D, 384 token context
   - HNSW vector index with O(log n) search complexity (drop-in replacement for linear O(n) search)
   - Auto-embedding on memory upsert (configurable per scope)
   - New MCP tools:
@@ -47,20 +62,35 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
     - embeddings.memories - Batch embed multiple memories
     - embeddings.modelInfo - Get model information
   - Automatic index resizing when capacity exceeded
-  - Persistence locking to prevent concurrent write errors
-  - Singleton pattern with model instance caching for performance
+  - Proper resource management with embedder cleanup on dispose (prevents memory leaks)
+  - Instance-based model management (not singleton) for better lifecycle control
+  - True parallel batch embedding using Promise.all for performance
   - Hybrid search automatically enabled when embeddings configured
   - Configurable HNSW parameters: maxElements, M, efConstruction, efSearch
+  - Dimension mismatch detection with actionable warnings
+  - Enhanced error handling with corruption detection and clean state reset
+  - **Critical Fixes** (commit 4ce6b96):
+    - Fixed HNSW persistence directory creation (prevented ENOENT errors)
+    - Added embedder cleanup to prevent 25-90MB memory leaks per model
+    - Fixed model switching memory leak (async unload before switching)
+    - Added dimension validation to prevent silent search failures
+    - Implemented true parallel batch processing
+    - Enhanced HNSW index loading with corruption detection
 
-- Context Packs
-  - memory.contextPack tool and kb://context/pack resource.
-  - Optional snippet filters: snippetLanguages, snippetFilePatterns.
-  - Optional budgets: maxChars and tokenBudget (fast heuristic ~4 chars/token).
-  - Symbol-aware cropping using function name or symbols when ranges are unavailable; windowed cropping when ranges are present.
-  - Per-scope section order and caps: contextPack { order, caps }.
+- **Context Packs for IDE Integration** ✅ **COMPLETED**
+  - memory.contextPack tool and kb://context/pack resource
+  - Optional snippet filters: snippetLanguages, snippetFilePatterns
+  - Optional budgets: maxChars and tokenBudget (fast heuristic ~4 chars/token)
+  - Symbol-aware cropping using function name or symbols when ranges unavailable
+  - Windowed cropping when ranges are present
+  - Per-scope section order and caps: contextPack { order, caps }
+  - IDE-ready format: snippets, facts, patterns, configs, links
 
-- Team workflows and policy
-  - project.sync.status and project.sync.merge (local → committed), sensitivity gates for committed writes.
+- **Team Workflows & Policy** ✅ **COMPLETED**
+  - project.sync.status and project.sync.merge (local → committed)
+  - Sensitivity gates for committed writes (public/team/private)
+  - Merge-friendly committed storage with one-file-per-item
+  - Append-only journal for CRDT-like conflict resolution
 
 ## Executive Summary
 
@@ -104,56 +134,76 @@ Observations:
 
 ## Feature Improvements
 
-1) Unified Memory Model (replace/augment Notes)
-- Adopt `src/types/Memory.ts` model: `MemoryItem`, `MemoryFacets` (tags, files, symbols), `MemoryContext` (repoId, branch, file, ranges), `MemoryQuality` (confidence, reuse, pinned), `MemorySecurity` (sensitivity).
-- Support `links` between items (refines/duplicates/depends/fixes/relates) to form knowledge graphs.
-- Keep `Note` tools operational but implement them atop MemoryItems for backward compatibility.
+### 1) Unified Memory Model ✅ **COMPLETED**
+- ✅ Adopted `src/types/Memory.ts` model: `MemoryItem`, `MemoryFacets` (tags, files, symbols), `MemoryContext` (repoId, branch, file, ranges), `MemoryQuality` (confidence, reuse, pinned), `MemorySecurity` (sensitivity)
+- ✅ Supports `links` between items (refines/duplicates/depends/fixes/relates) to form knowledge graphs
+- ✅ Backward compatibility maintained for legacy Note tools
 
-2) Hybrid Search (Full-Text + Vectors) ✅ **COMPLETED (Phase 3)**
+### 2) Hybrid Search (Full-Text + Vectors) ✅ **COMPLETED (Phase 3)**
 - ✅ Pluggable search service combining BM25 full-text and vector similarity
 - ✅ Local embedding generation using transformers.js (offline, no external APIs)
 - ✅ HNSW vector index via `hnswlib-node` with O(log n) search complexity
-- ✅ Three embedding models supported: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
+- ✅ Three embedding models: bge-small-en-v1.5 (384D, default), all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D)
 - ✅ Hybrid ranking: `score = wBM25 * bm25 + wVec * cosine + scopeBoost + recencyBoost + pinBoost + phraseBonus + titleBonus`
 - ✅ Per-scope configuration in `config.json` with `embeddings` and `ranking.hybrid` sections
 - ✅ Auto-embedding on memory upsert (configurable)
 - ✅ New MCP tools: embeddings.text, embeddings.memory, embeddings.memories, embeddings.modelInfo
 - ✅ Automatic index resizing and persistence locking for concurrent safety
+- ✅ Dimension mismatch detection and warnings
+- ✅ True parallel batch embedding with Promise.all
 
-3) Context Packs for LLMs
-- New resource/tool: `memory.contextPack` that returns a synthesis: snippets (with file and range), facts, configs, patterns, and relevant links. Integrate `snippetWindow` to crop code appropriately.
-- Optional summarization: produce short, model-friendly bullets for high-signal facts.
+### 3) Context Packs for LLMs ✅ **COMPLETED**
+- ✅ New resource/tool: `memory.contextPack` returns synthesis: snippets (with file and range), facts, configs, patterns, and relevant links
+- ✅ Integrated `snippetWindow` for code cropping
+- ✅ Token budget support (~4 chars/token heuristic)
+- ✅ Symbol-aware cropping
+- ⚠️ Optional summarization: model-friendly bullets for high-signal facts (PLANNED - Phase 4+)
 
-4) Rich MCP Tools
-- Query and Retrieval:
-  - `memory.query` — hybrid query with filters (type/tags/files/symbols/language/time/pinned), returns items or a context pack.
-  - `memory.get` — get item by id (superset of `kb.read`).
-  - `memory.list` — fast listing via catalog with pagination and sorting.
-- Authoring and Curation:
-  - `memory.upsert` — create or update by id.
-  - `memory.link` — create relation edges between items.
-  - `memory.pin`/`memory.unpin` — control pin state and priority.
-  - `memory.tag` — add/remove tags in bulk.
-  - `memory.attach` — attach file/symbol references (e.g., “src/foo.ts:42-60”).
-  - `memory.delete` — delete by id with scope awareness.
-- Project/Scope Tools:
-  - `project.initCommitted` — create `.llm-memory/` with merge-friendly layout and standard `.gitignore`.
-  - `project.config.get/set` — read/write `config.json` policies (autoLearn, sensitivity, filters, ttlDays).
-  - `project.sync.status` — show committed vs local divergence for easy merges.
+### 4) Rich MCP Tools ✅ **COMPLETED**
+- ✅ Query and Retrieval:
+  - ✅ `memory.query` — hybrid query with filters (type/tags/files/symbols/language/time/pinned), returns items or context pack
+  - ✅ `memory.get` — get item by id (superset of `kb.read`)
+  - ✅ `memory.list` — fast listing via catalog with pagination and sorting
+- ✅ Authoring and Curation:
+  - ✅ `memory.upsert` — create or update by id
+  - ✅ `memory.link` — create relation edges between items
+  - ✅ `memory.pin`/`memory.unpin` — control pin state and priority
+  - ✅ `memory.tag` — add/remove tags in bulk
+  - ✅ `memory.delete` — delete by id with scope awareness
+  - ⚠️ `memory.attach` — attach file/symbol references (PLANNED - Phase 4+)
+- ✅ Project/Scope Tools:
+  - ✅ `project.initCommitted` — create `.llm-memory/` with merge-friendly layout
+  - ✅ `project.config.get/set` — read/write `config.json` policies
+  - ✅ `project.sync.status` — show committed vs local divergence
+  - ✅ `project.sync.merge` — merge local → committed with sensitivity gates
+- ✅ Embedding Tools (Phase 3):
+  - ✅ `embeddings.text` — generate embedding for raw text
+  - ✅ `embeddings.memory` — embed single memory by ID
+  - ✅ `embeddings.memories` — batch embed multiple memories
+  - ✅ `embeddings.modelInfo` — get embedding model information
+- ✅ Migration Tools:
+  - ✅ `migration.storage_backend` — migrate between file/video/markdown backends
+  - ✅ `migration.scope` — migrate between global/local/committed scopes
+  - ✅ `migration.status` — check migration status and stats
+  - ✅ `migration.validate` — validate migration integrity
 
-5) Team Sharing & Merge Strategy
-- Store committed items as one-file-per-item JSON in `items/` with a flat `catalog.json` and append-only `journal.ndjson`.
-- Favor CRDT-like semantics at the journal level (append-only). On merge conflicts, prefer last-write-wins for fields like `updatedAt` and additive merges for `tags`, `links`.
-- Provide a simple `project.sync.merge` tool that applies a deterministic merge for catalog and journal.
+### 5) Team Sharing & Merge Strategy ✅ **COMPLETED**
+- ✅ Store committed items as one-file-per-item JSON in `items/` with flat `catalog.json` and append-only `journal.ndjson`
+- ✅ CRDT-like semantics at journal level (append-only)
+- ✅ Last-write-wins for fields like `updatedAt`; additive merges for `tags`, `links`
+- ✅ `project.sync.merge` tool with deterministic merge for catalog and journal
+- ✅ Sensitivity gates for committed scope (public/team/private)
 
-6) Auto-Learning Hooks
-- Optional “auto-learn” policy: intercept IDE assistant events (e.g., successful fixes, accepted refactors) and materialize them as `insight`/`pattern` memory items with context.
-- Git hooks integration: capture commit messages for “runbook”/“fact” items when tagged (e.g., `#kb` in commit message).
+### 6) Auto-Learning Hooks ⚠️ **PLANNED (Phase 4+)**
+- ⚠️ Optional "auto-learn" policy: intercept IDE assistant events (successful fixes, accepted refactors)
+- ⚠️ Materialize as `insight`/`pattern` memory items with context
+- ⚠️ Git hooks integration: capture commit messages for "runbook"/"fact" items when tagged (e.g., `#kb`)
 
-7) Privacy & Safety
-- Secret filtering on ingestion: redact/ignore lines matching common patterns (API keys, tokens) or via entropy heuristic; store salted hashes in `secretHashRefs` if needed.
-- Sensitivity tiers (`public | team | private`) gating what can be written to committed scope.
-- Optional encryption-at-rest for global/local stores (symmetric key in OS keychain).
+### 7) Privacy & Safety ✅ **PARTIALLY COMPLETED**
+- ✅ Secret filtering on ingestion: redact common patterns (API keys, tokens)
+- ✅ Store salted hashes in `secretHashRefs`
+- ✅ Sensitivity tiers (`public | team | private`) gating committed scope writes
+- ⚠️ Optional encryption-at-rest for global/local stores (PLANNED - Phase 4+)
 
 8) Attachments and Symbols
 - Allow items to reference code symbols and file ranges; populate via Language Server or tree-sitter where available.
