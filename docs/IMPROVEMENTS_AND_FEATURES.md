@@ -36,6 +36,22 @@ The proposals are designed to remain offline-first, performant, and MCP-complian
     - Bulk import vectors: vectors.importBulk and vectors.importJsonl (JSONL), with dimension enforcement
   - LRU query cache; invalidation on writes/compaction.
 
+- **Phase 3: Local Embeddings & HNSW Vector Search** ✅ **COMPLETED**
+  - Local embedding generation using transformers.js (offline, no external APIs)
+  - Three embedding models: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
+  - HNSW vector index with O(log n) search complexity (drop-in replacement for linear O(n) search)
+  - Auto-embedding on memory upsert (configurable per scope)
+  - New MCP tools:
+    - embeddings.text - Generate embedding for raw text
+    - embeddings.memory - Embed a single memory by ID
+    - embeddings.memories - Batch embed multiple memories
+    - embeddings.modelInfo - Get model information
+  - Automatic index resizing when capacity exceeded
+  - Persistence locking to prevent concurrent write errors
+  - Singleton pattern with model instance caching for performance
+  - Hybrid search automatically enabled when embeddings configured
+  - Configurable HNSW parameters: maxElements, M, efConstruction, efSearch
+
 - Context Packs
   - memory.contextPack tool and kb://context/pack resource.
   - Optional snippet filters: snippetLanguages, snippetFilePatterns.
@@ -93,12 +109,16 @@ Observations:
 - Support `links` between items (refines/duplicates/depends/fixes/relates) to form knowledge graphs.
 - Keep `Note` tools operational but implement them atop MemoryItems for backward compatibility.
 
-2) Hybrid Search (Full-Text + Vectors)
-- Add a pluggable search service combining:
-  - Full-text BM25-like index (e.g., lunr or a custom inverted index on `index/`).
-  - Vector similarity via a local embedding provider (HNSW index via `hnswlib-node` or a pure-TS HNSW/Annoy variant). Store embeddings in `index/vectors.*` and reference by `id`.
-- Hybrid ranking: `score = w_bm25 * bm25 + w_vec * cosine + scopeBoost + recencyBoost + pinBoost`.
-- Provide settings in `config.json` per-scope to enable/disable vectors or tune weights.
+2) Hybrid Search (Full-Text + Vectors) ✅ **COMPLETED (Phase 3)**
+- ✅ Pluggable search service combining BM25 full-text and vector similarity
+- ✅ Local embedding generation using transformers.js (offline, no external APIs)
+- ✅ HNSW vector index via `hnswlib-node` with O(log n) search complexity
+- ✅ Three embedding models supported: all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D), bge-small-en-v1.5 (384D)
+- ✅ Hybrid ranking: `score = wBM25 * bm25 + wVec * cosine + scopeBoost + recencyBoost + pinBoost + phraseBonus + titleBonus`
+- ✅ Per-scope configuration in `config.json` with `embeddings` and `ranking.hybrid` sections
+- ✅ Auto-embedding on memory upsert (configurable)
+- ✅ New MCP tools: embeddings.text, embeddings.memory, embeddings.memories, embeddings.modelInfo
+- ✅ Automatic index resizing and persistence locking for concurrent safety
 
 3) Context Packs for LLMs
 - New resource/tool: `memory.contextPack` that returns a synthesis: snippets (with file and range), facts, configs, patterns, and relevant links. Integrate `snippetWindow` to crop code appropriately.

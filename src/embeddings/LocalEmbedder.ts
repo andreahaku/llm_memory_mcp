@@ -45,7 +45,7 @@ export class LocalEmbedder {
   private isLoading = false;
   private loadPromise: Promise<void> | null = null;
 
-  constructor(modelKey: string = 'all-MiniLM-L6-v2') {
+  constructor(modelKey: string = 'bge-small-en-v1.5') {
     if (!AVAILABLE_MODELS[modelKey]) {
       throw new Error(`Unknown model: ${modelKey}. Available: ${Object.keys(AVAILABLE_MODELS).join(', ')}`);
     }

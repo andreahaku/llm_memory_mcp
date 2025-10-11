@@ -7,12 +7,14 @@ A local-first, team-ready MCP server that provides a durable memory system for L
 - **Three Storage Backends**: Choose between file (JSON), video (QR+MP4 compression), or markdown (Obsidian-compatible)
 - **Revolutionary Video Storage**: 50-100x compression through QR code + video encoding while maintaining sub-100ms search
 - **Markdown/Obsidian Integration**: Native markdown format with YAML frontmatter and wikilinks for Obsidian vaults
+- **Local Embeddings & HNSW Search**: Offline semantic search with transformers.js and O(log n) vector indexing - no external APIs required
 - **Automatic Backend Selection**: Intelligent detection of capabilities with seamless migration between backends
 - **Flexible Storage Architecture**: Switch between file, video, and markdown storage at any time
 - Unified Memory model: snippet, pattern, config, insight, runbook, fact, note
 - Scopes: global (personal), local (per-project, uncommitted), committed (project/.llm-memory)
 - **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
 - Fast search: BM25 scoring + boosts (scope, pin, recency, confidence) with phrase/title bonuses
+- **Hybrid Search**: Combine keyword-based BM25 with semantic vector similarity for best-of-both-worlds retrieval
 - **User Feedback System**: Record helpful/not helpful feedback to improve confidence scoring
 - **Optimized Journal System**: Content-based hashing reduces journal storage by 81-95% with automatic migration
 - Tuning via config.json per scope (field weights, bm25, boosts, confidence parameters)
@@ -914,36 +916,283 @@ Example configuration:
 }
 ```
 
-## Hybrid Vector Search
+## Local Embeddings & Hybrid Search
 
-Enable hybrid search via config (per scope) and provide vectors for items and query:
+### Overview
 
-1) Enable hybrid and set weights:
+The system includes **local embedding generation** using transformers.js and **HNSW vector indexing** for high-performance semantic search. This enables:
+
+- **Offline embedding generation** - No external API calls or network dependencies
+- **HNSW (Hierarchical Navigable Small World)** - O(log n) search complexity vs O(n) linear scan
+- **Hybrid search** - Combine keyword-based BM25 with semantic vector similarity
+- **Multiple embedding models** - Choose based on your needs (speed vs quality vs dimensions)
+- **Auto-embedding** - Automatic vector generation on memory upsert (configurable)
+
+### Available Embedding Models
+
+Three pre-configured models, all running locally via transformers.js:
+
+| Model | Dimensions | Max Tokens | Best For | Speed |
+|-------|------------|------------|----------|-------|
+| **bge-small-en-v1.5** (default) | 384 | 512 | Code and technical documentation | ⚡⚡ |
+| **all-MiniLM-L6-v2** | 384 | 256 | General text, fast inference | ⚡⚡⚡ |
+| **all-mpnet-base-v2** | 768 | 384 | Higher quality semantic matching | ⚡⚡ |
+
+First run downloads the model (~25-90MB depending on model), then cached locally in `.cache/transformers/`.
+
+### Quick Start with Local Embeddings
+
+**1. Enable embeddings in configuration:**
 ```json
-{ "name": "project.config.set", "arguments": { "scope": "committed", "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" } } } } }
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "embeddings": {
+      "enabled": true,
+      "model": "bge-small-en-v1.5",
+      "indexType": "hnsw",
+      "autoGenerate": true
+    }
+  }
+}}
 ```
 
-2) Set an item vector:
+**2. Create a memory (auto-embedding happens in background):**
 ```json
-{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05, ...] } }
+{ "name": "memory.upsert", "arguments": {
+  "type": "snippet",
+  "scope": "local",
+  "title": "React useDebounce Hook",
+  "code": "const useDebounce = (value, delay) => { /* implementation */ }",
+  "language": "typescript",
+  "tags": ["react", "hooks", "performance"]
+}}
 ```
 
-3) Query with a query embedding:
+**3. Manually embed specific memories:**
 ```json
-{ "name": "memory.query", "arguments": { "q": "authentication flow", "scope": "project", "k": 20, "vector": [/* query embedding */], "filters": { "type": ["snippet", "pattern"] } } }
+{ "name": "embeddings.memory", "arguments": { "id": "01ABC...", "scope": "local" } }
 ```
 
-The server blends BM25 and cosine scores per configured weights, then applies boosts and phrase/title bonuses.
-
-Bulk vector import (JSONL)
-- Prepare a JSONL file where each line is: {"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
-- Import with optional dimension override:
+**4. Batch embed multiple memories:**
 ```json
-{ "name": "vectors.importJsonl", "arguments": { "scope": "local", "path": "/abs/path/vectors.jsonl", "dim": 768 } }
+{ "name": "embeddings.memories", "arguments": {
+  "ids": ["01ABC...", "01DEF...", "01GHI..."],
+  "scope": "local"
+}}
 ```
-Or pass items inline:
+
+**5. Generate embedding for raw text:**
 ```json
-{ "name": "vectors.importBulk", "arguments": { "scope": "local", "items": [{"id":"01A","vector":[0.1,0.2]},{"id":"01B","vector":[0.0,0.3]}] } }
+{ "name": "embeddings.text", "arguments": {
+  "text": "How to implement authentication in React?",
+  "model": "bge-small-en-v1.5"
+}}
+```
+
+**6. Get model information:**
+```json
+{ "name": "embeddings.modelInfo", "arguments": { "model": "bge-small-en-v1.5" } }
+```
+
+### Hybrid Search Configuration
+
+Enable hybrid search to combine BM25 keyword matching with semantic vector similarity:
+
+**1) Enable hybrid search and set weights:**
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "ranking": {
+      "hybrid": {
+        "enabled": true,
+        "wBM25": 0.7,      // 70% weight on keyword matching
+        "wVec": 0.3,       // 30% weight on semantic similarity
+        "model": "bge-small-en-v1.5"
+      }
+    },
+    "embeddings": {
+      "enabled": true,
+      "autoGenerate": true
+    }
+  }
+}}
+```
+
+**2) Query with hybrid search (automatic when configured):**
+```json
+{ "name": "memory.query", "arguments": {
+  "q": "react hooks best practices",
+  "scope": "project",
+  "k": 10,
+  "filters": { "type": ["snippet", "pattern"] }
+}}
+```
+
+The system automatically:
+- Generates embedding for your query text
+- Computes BM25 scores for keyword matches
+- Computes cosine similarity scores for semantic matches
+- Blends scores using configured weights (wBM25, wVec)
+- Applies additional boosts (scope, recency, pin, phrase, title)
+- Returns ranked results
+
+### HNSW Index Configuration
+
+Fine-tune the HNSW index performance (advanced):
+
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "embeddings": {
+      "enabled": true,
+      "model": "bge-small-en-v1.5",
+      "indexType": "hnsw",
+      "hnsw": {
+        "maxElements": 10000,      // Initial capacity (auto-resizes)
+        "M": 16,                   // Connections per node (higher = better recall, more memory)
+        "efConstruction": 200,     // Build quality (higher = better index, slower build)
+        "efSearch": 50             // Search quality (higher = better recall, slower search)
+      }
+    }
+  }
+}}
+```
+
+**Performance tuning:**
+- **M**: Number of bi-directional links (default: 16). Higher values improve recall but increase memory usage.
+- **efConstruction**: Dynamic candidate list size during index building (default: 200). Higher values create better indexes but take longer.
+- **efSearch**: Search candidate list size (default: 50). Higher values improve recall but slow down queries.
+
+### Embedding Storage
+
+Embeddings are stored alongside the search index in each scope:
+
+```
+<scope-root>/
+  index/
+    vectors.hnsw           # Binary HNSW index
+    vectors.meta.json      # Dimension, count, parameters
+    vectors.mapping.json   # ID to numeric label mapping
+```
+
+### Manual Vector Management
+
+For advanced use cases, you can manually manage vectors:
+
+**Set an item vector:**
+```json
+{ "name": "vectors.set", "arguments": {
+  "scope": "local",
+  "id": "01ABC...",
+  "vector": [0.1, -0.2, 0.05, /* ... */]
+}}
+```
+
+**Remove an item vector:**
+```json
+{ "name": "vectors.remove", "arguments": { "scope": "local", "id": "01ABC..." } }
+```
+
+**Bulk vector import (JSONL):**
+```json
+{ "name": "vectors.importJsonl", "arguments": {
+  "scope": "local",
+  "path": "/abs/path/vectors.jsonl",
+  "dim": 384
+}}
+```
+
+JSONL format (one object per line):
+```json
+{"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
+{"id":"01DEF...","vector":[0.2,0.1,-0.03,...]}
+```
+
+**Bulk vector import (inline):**
+```json
+{ "name": "vectors.importBulk", "arguments": {
+  "scope": "local",
+  "items": [
+    {"id":"01A","vector":[0.1,0.2,0.3]},
+    {"id":"01B","vector":[0.0,0.3,0.1]}
+  ]
+}}
+```
+
+### MCP Tools for Embeddings
+
+- **embeddings.text** — Generate embedding vector for raw text
+- **embeddings.memory** — Generate and store embedding for a memory by ID
+- **embeddings.memories** — Batch generate embeddings for multiple memories
+- **embeddings.modelInfo** — Get information about available models (dimensions, max tokens, description)
+- **vectors.set** — Set/update an item embedding
+- **vectors.remove** — Remove an item embedding
+- **vectors.importBulk** — Bulk import vectors (dimension consistency enforced)
+- **vectors.importJsonl** — Bulk import vectors from JSONL file
+
+### Performance Characteristics
+
+**HNSW vs Linear Search:**
+- Linear search: O(n) complexity, scans all vectors
+- HNSW search: O(log n) complexity, navigable small-world graph
+- **Speed improvement**: 10-100x faster on large datasets (>10k items)
+
+**Embedding Generation Speed (first run includes model download):**
+- bge-small-en-v1.5 (default): ~80-200ms per text (cached)
+- all-MiniLM-L6-v2: ~50-150ms per text (cached, fastest)
+- all-mpnet-base-v2: ~100-300ms per text (cached, highest quality)
+
+**Storage Overhead:**
+- 384D embeddings: ~1.5KB per item
+- 768D embeddings: ~3KB per item
+- HNSW index: ~2-4x raw vector size (depends on M parameter)
+
+### Troubleshooting
+
+**Model download issues:**
+```bash
+# Set custom cache directory
+export TRANSFORMERS_CACHE="/path/to/cache"
+pnpm start
+```
+
+**Memory usage concerns:**
+```bash
+# Use lighter model for even faster inference
+{ "embeddings": { "model": "all-MiniLM-L6-v2" } }  # Fastest option
+# Default is bge-small-en-v1.5 (optimized for code)
+```
+
+**Slow embedding generation:**
+- First run downloads model (~25-90MB) - this is normal
+- Subsequent runs use cached model and are much faster
+- Default bge-small-en-v1.5 is optimized for code
+- Use all-MiniLM-L6-v2 for fastest inference on general text
+
+**HNSW index errors:**
+```bash
+# Check index statistics
+echo '{"name": "maintenance.verify", "arguments": {"scope": "local"}}' | node dist/index.js
+
+# Rebuild index if corrupted
+rm -rf .llm-memory/index/vectors.*
+# Re-embed memories
+{ "name": "embeddings.memories", "arguments": { "ids": [...], "scope": "local" } }
+```
+
+**Dimension mismatch errors:**
+All vectors in a scope must have the same dimension. To change models:
+```bash
+# Remove existing vectors
+rm -rf .llm-memory/index/vectors.*
+# Update config with new model
+# Re-embed all memories
 ```
 
 ## Context Packs

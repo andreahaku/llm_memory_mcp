@@ -24,7 +24,7 @@ async function testEmbeddings() {
   try {
     // Test 1: Get model info
     log('Test 1: Get embedding model information');
-    const modelInfo = manager.getEmbeddingModelInfo('all-MiniLM-L6-v2');
+    const modelInfo = manager.getEmbeddingModelInfo('bge-small-en-v1.5');
     log(`✓ Model: ${modelInfo.name}`);
     log(`✓ Dimension: ${modelInfo.dimension}`);
     log(`✓ Max tokens: ${modelInfo.maxTokens}`);
@@ -118,13 +118,13 @@ async function testEmbeddings() {
     if (config?.embeddings) {
       log('✓ Embeddings configuration found:');
       log(`  - Enabled: ${config.embeddings.enabled ?? false}`);
-      log(`  - Model: ${config.embeddings.model || 'all-MiniLM-L6-v2 (default)'}`);
+      log(`  - Model: ${config.embeddings.model || 'bge-small-en-v1.5 (default)'}`);
       log(`  - Index type: ${config.embeddings.indexType || 'hnsw (default)'}`);
       log(`  - Auto-generate: ${config.embeddings.autoGenerate ?? true}`);
     } else {
       log('ℹ Embeddings not configured (using defaults)');
       log('  To enable auto-embedding, use project.config.set with:');
-      log('  { embeddings: { enabled: true, model: "all-MiniLM-L6-v2", indexType: "hnsw" } }');
+      log('  { embeddings: { enabled: true, model: "bge-small-en-v1.5", indexType: "hnsw" } }');
     }
 
     // Cleanup
