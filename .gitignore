@@ -79,6 +79,10 @@ coverage/
 # Local memory data (for testing)
 .llm-memory_backup_*/
 
+# Auto-learning queue and temporary files
+.llm-memory/autolearn-queue.ndjson
+.git/llm-memory-autolearn.tmp
+
 # Test artifacts
 test-results/
 screenshots/
