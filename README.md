@@ -1,12 +1,14 @@
 # LLM Memory MCP Server (Memory-First)
 
-A local-first, team-ready MCP server that provides a durable memory system for LLM-based coding workflows. It’s optimized for JavaScript/TypeScript development (web and mobile), but works for any stack. Memory items can be stored globally, locally per project, or committed to the repo for team sharing — with fast search, ranking, and per-scope tuning.
+A local-first, team-ready MCP server that provides a durable memory system for LLM-based coding workflows. It's optimized for JavaScript/TypeScript development (web and mobile), but works for any stack. Memory items can be stored globally, locally per project, or committed to the repo for team sharing — with fast search, ranking, and per-scope tuning.
 
 ## Highlights
 
+- **Three Storage Backends**: Choose between file (JSON), video (QR+MP4 compression), or markdown (Obsidian-compatible)
 - **Revolutionary Video Storage**: 50-100x compression through QR code + video encoding while maintaining sub-100ms search
-- **Automatic Backend Selection**: Intelligent detection of FFmpeg capabilities with graceful fallback to file storage
-- **Dual Storage Architecture**: Seamless switching between video compression and traditional file storage
+- **Markdown/Obsidian Integration**: Native markdown format with YAML frontmatter and wikilinks for Obsidian vaults
+- **Automatic Backend Selection**: Intelligent detection of capabilities with seamless migration between backends
+- **Flexible Storage Architecture**: Switch between file, video, and markdown storage at any time
 - Unified Memory model: snippet, pattern, config, insight, runbook, fact, note
 - Scopes: global (personal), local (per-project, uncommitted), committed (project/.llm-memory)
 - **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
@@ -217,11 +219,50 @@ The agent respects your LLM Memory MCP server configuration:
 
 No additional configuration needed - the agent adapts to your existing memory setup.
 
-## Video Storage Architecture
+## Storage Backends
 
-### Revolutionary Compression Technology
+The LLM Memory MCP Server supports three storage backends, each optimized for different use cases:
 
-The LLM Memory MCP Server features a breakthrough video-based storage system that achieves **50-100x compression ratios** while maintaining sub-100ms search performance. This innovative approach uses QR code encoding combined with video compression to dramatically reduce storage requirements.
+### 1. Markdown Storage (Obsidian-Compatible)
+
+**Perfect for:** Knowledge management, team wikis, Obsidian users, human-readable storage
+
+Stores memories as individual markdown files with YAML frontmatter, fully compatible with Obsidian and other markdown tools. Each memory is a standalone `.md` file with:
+- **YAML frontmatter** containing metadata (id, type, tags, confidence, etc.)
+- **Markdown body** with title, description, and code blocks
+- **Wikilinks** for linking related memories (`[[memory-id-title]]`)
+- **Context sections** showing repository, file, and tool information
+
+**Benefits:**
+- ✅ Human-readable and editable in any text editor
+- ✅ Full Obsidian integration with graph view, backlinks, and wikilinks
+- ✅ Version control friendly (git diff works naturally)
+- ✅ Easy to share, review, and collaborate on
+- ✅ No external dependencies required
+
+**Storage Structure:**
+```
+_LLM_memories/
+  react-project/              # Project-based subfolder (from repoId)
+    01ABC-react-hooks.md
+    01DEF-typescript-patterns.md
+  nodejs-api/                 # Different project
+    01GHI-express-middleware.md
+  _global/                    # Memories without specific project
+    01JKL-git-workflow.md
+```
+
+Memories are automatically organized by project using the `repoId` from their context. This makes it easy to:
+- Navigate memories by project in Obsidian's file explorer
+- Use Obsidian's folder-based features (tags, filters, views)
+- Keep project knowledge isolated and organized
+- Find related memories within the same project
+
+### 2. Video Storage (Ultra-Compressed)
+
+**Perfect for:** Large codebases, storage-constrained environments, archival
+
+Revolutionary video-based storage system that achieves **50-100x compression ratios** while maintaining sub-100ms search performance. Uses QR code encoding combined with video compression to dramatically reduce storage requirements.
 
 ### How Video Storage Works
 
@@ -252,14 +293,37 @@ Content → QR Code Encoding → Video Frame → H.264/H.265 Compression → Ult
 └────────────────┴──────────────┴──────────────┴──────────────┘
 ```
 
-### Automatic Backend Detection
+### 3. File Storage (Traditional JSON)
 
-The system intelligently detects available video encoding capabilities:
+**Perfect for:** Maximum compatibility, no dependencies, debugging
+
+Traditional JSON-based storage with optimized journaling and content-based hashing. Each memory is stored as a separate JSON file with automatic journal compaction.
+
+**Benefits:**
+- ✅ No external dependencies
+- ✅ Fast and reliable
+- ✅ Optimized journal with 81-95% compression via SHA-256 hashing
+- ✅ Works everywhere Node.js runs
+
+**Storage Structure:**
+```
+items/
+  01ABC.json
+  01DEF.json
+journal-optimized.ndjson
+catalog.json
+```
+
+### Backend Selection and Detection
+
+The system intelligently detects available storage capabilities and selects the optimal backend:
 
 **Detection Priority:**
-1. **Native FFmpeg** - Maximum performance (200-600 fps encoding)
-2. **FFmpeg.wasm** - JavaScript fallback (10-40 fps encoding)
-3. **File Storage** - Traditional JSON storage with optimized journaling
+1. **Config Check** - Explicit `storage.backend` setting in config.json
+2. **Markdown Detection** - Presence of `memories/` directory with `.md` files
+3. **Video Detection** - Presence of `segments/` directory with video files
+4. **FFmpeg Check** - Native FFmpeg availability (for video encoding)
+5. **Fallback** - File storage (always available)
 
 **FFmpeg Detection:**
 ```typescript
@@ -315,25 +379,35 @@ The system automatically selects the optimal storage backend and configures comp
 ```
 
 **Configuration Options:**
-- `backend`: `"auto"` (default), `"video"`, `"file"`
-- `codec`: `"h264"` (default), `"h265"`
-- `crf`: Quality setting (18-28, lower = higher quality)
-- `preset`: Encoding speed (`"fast"`, `"medium"`, `"slow"`)
-- `errorCorrection`: QR error correction (`"L"`, `"M"`, `"Q"`, `"H"`)
+- `backend`: `"auto"` (default), `"file"`, `"video"`, `"markdown"`
+- `codec`: `"h264"` (default), `"h265"` (video only)
+- `crf`: Quality setting (18-28, lower = higher quality) (video only)
+- `preset`: Encoding speed (`"fast"`, `"medium"`, `"slow"`) (video only)
+- `errorCorrection`: QR error correction (`"L"`, `"M"`, `"Q"`, `"H"`) (video only)
 
 ### Migration Between Storage Backends
 
-The system provides seamless migration between file and video storage:
+The system provides seamless migration between all three storage backends (file ↔ video ↔ markdown):
 
 **Check Migration Status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.status", "arguments": { "scope": "local", "backend": "markdown" } }
+```
+
+**Migrate to Markdown Storage:**
+```json
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "file",
+  "targetBackend": "markdown",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
 ```
 
 **Migrate to Video Storage:**
 ```json
 { "name": "migration.storage.backend", "arguments": {
-  "sourceBackend": "file",
+  "sourceBackend": "markdown",
   "targetBackend": "video",
   "scope": "local",
   "validateAfterMigration": true
@@ -425,15 +499,121 @@ LLM_MEMORY_FORCE_BACKEND=video pnpm start
   snapshot-meta.json       # integrity verification metadata
 ```
 
+**Markdown Storage Layout:**
+```
+<scope-root>/
+  _LLM_memories/          # Root memories folder
+    project-a/            # Project-specific subfolders (based on repoId)
+      01ABC-component.md
+      01DEF-util.md
+    project-b/
+      01GHI-api.md
+    _global/              # Memories without specific project
+      01JKL-pattern.md
+  .memory/                # Hidden metadata directory
+    catalog.json          # id → MemoryItemSummary
+    config.json           # per-scope configuration
+    index/                # Search indexes
+      inverted.json
+      vectors.bin
+      meta.json
+```
+
 **Storage Backend Auto-Selection:**
-- System automatically detects FFmpeg and chooses optimal storage backend
+- System automatically detects storage backend based on directory structure
 - `config.json` contains `storage.backend` field indicating active backend
-- Seamless migration between backends using migration tools
+- Seamless migration between all three backends using migration tools
 
 Initialize committed scope in current project:
 ```json
 { "name": "project.initCommitted", "arguments": {} }
 ```
+
+## Obsidian Integration
+
+When using markdown storage backend, memories are fully compatible with Obsidian, enabling powerful knowledge management features:
+
+### Setup with Obsidian
+
+1. **Enable markdown storage:**
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": { "version": "1", "storage": { "backend": "markdown" } }
+}}
+```
+
+2. **Open your memory folder in Obsidian:**
+   - Global: `~/.llm-memory/global/_LLM_memories/`
+   - Local: `~/.llm-memory/projects/<project-hash>/_LLM_memories/`
+   - Committed: `<project>/.llm-memory/_LLM_memories/`
+
+   **Project Organization**: Memories are automatically organized into subfolders based on their project (`repoId`):
+   - `_LLM_memories/react-app/` - Memories from your React project
+   - `_LLM_memories/api-server/` - Memories from your API project
+   - `_LLM_memories/_global/` - Memories without a specific project
+
+3. **Features you get:**
+   - 📊 **Graph View** - Visualize connections between memories
+   - 🔗 **Wikilinks** - Click `[[memory-id-title]]` to navigate
+   - ⬅️ **Backlinks** - See which memories reference the current one
+   - 🔍 **Full-text Search** - Use Obsidian's powerful search
+   - 🏷️ **Tags** - Filter and organize with #tags
+   - ✍️ **Edit Anywhere** - Modify memories in Obsidian or your IDE
+
+### Memory File Format
+
+Each memory is a markdown file with YAML frontmatter:
+
+```markdown
+---
+id: 01JDF97ZMB000000000000001
+type: pattern
+scope: global
+title: React Hooks Best Practices
+language: typescript
+tags: [react, hooks, best-practices]
+confidence: 0.85
+pinned: false
+createdAt: 2025-10-11T13:10:00.000Z
+updatedAt: 2025-10-11T13:10:00.000Z
+version: 1
+---
+
+# React Hooks Best Practices
+
+Essential patterns for using React Hooks effectively.
+
+## Code
+
+\`\`\`typescript
+// Your code here
+\`\`\`
+
+## Related Memories
+
+- [[01ABC-typescript-generics]]
+- [[01DEF-react-performance]]
+
+## Context
+
+- **Tool**: Claude Code
+- **Framework**: React
+```
+
+### Obsidian API Integration
+
+For programmatic access to your Obsidian vault, install the [Local REST API plugin](https://github.com/coddingtonbear/obsidian-local-rest-api):
+
+1. Install the plugin in Obsidian
+2. Enable HTTPS in plugin settings
+3. Generate an API key
+4. Use the REST API to read/write memories programmatically
+
+This enables powerful workflows like:
+- Sync memories to Obsidian in real-time
+- Create memories from Obsidian notes
+- Automate knowledge capture from development sessions
 
 ## MCP Tools
 
@@ -478,9 +658,9 @@ Initialize committed scope in current project:
 - **journal.migrate** — Migrate legacy journal to optimized format
 - **journal.verify** — Verify integrity using optimized journal hashes
 
-### **Video Storage & Migration Tools**
-- **migration.status** — Check migration status and storage metrics
-- **migration.storage.backend** — Migrate between file and video storage backends
+### **Storage Backend & Migration Tools**
+- **migration.status** — Check migration status and storage metrics for any backend (file/video/markdown)
+- **migration.storage.backend** — Migrate between storage backends (file ↔ video ↔ markdown)
 - **migration.scope** — Migrate filtered memories between scopes (global/local/committed)
 - **migration.validate** — Validate migration integrity and consistency
 
@@ -571,10 +751,20 @@ Record usage event for confidence scoring:
 
 **Check storage backend and migration status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.status", "arguments": { "scope": "local", "backend": "markdown" } }
 ```
 
-**Migrate from file to video storage:**
+**Migrate from file to markdown storage (Obsidian-compatible):**
+```json
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "file",
+  "targetBackend": "markdown",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
+```
+
+**Migrate from file to video storage (ultra-compressed):**
 ```json
 { "name": "migration.storage.backend", "arguments": {
   "sourceBackend": "file",
@@ -584,9 +774,19 @@ Record usage event for confidence scoring:
 }}
 ```
 
-**Validate video storage integrity:**
+**Migrate from markdown to video storage:**
 ```json
-{ "name": "migration.validate", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "markdown",
+  "targetBackend": "video",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
+```
+
+**Validate storage integrity:**
+```json
+{ "name": "migration.validate", "arguments": { "scope": "local", "backend": "markdown" } }
 ```
 
 Rebuild catalog and index for project scopes:

@@ -16,7 +16,13 @@ function log(message: string, ...args: any[]) {
  *
  * Directory structure:
  * <scope-root>/
- *   memories/            # Markdown files: <id>-<slug>.md
+ *   memories/            # Root memories folder
+ *     project-a/         # Project-specific subfolder (based on repoId)
+ *       01ABC-react-hooks.md
+ *     project-b/
+ *       01DEF-database.md
+ *     _global/           # Memories without repoId
+ *       01GHI-general.md
  *   .memory/
  *     catalog.json       # Fast lookup: id → MemoryItemSummary
  *     config.json        # Storage configuration
@@ -35,7 +41,7 @@ export class MarkdownStorageAdapter implements StorageAdapter {
 
   constructor(directory: string) {
     this.directory = directory;
-    this.memoriesDir = path.join(directory, 'memories');
+    this.memoriesDir = path.join(directory, '_LLM_memories');
     this.metaDir = path.join(directory, '.memory');
     this.catalogPath = path.join(this.metaDir, 'catalog.json');
     this.configPath = path.join(this.metaDir, 'config.json');
@@ -45,6 +51,31 @@ export class MarkdownStorageAdapter implements StorageAdapter {
 
     // Load catalog
     this.catalog = this.loadCatalog();
+  }
+
+  /**
+   * Get project subfolder name from item's repoId
+   * Returns '_global' for items without a repoId
+   */
+  private getProjectFolder(item: MemoryItem): string {
+    const repoId = item.context?.repoId;
+    if (!repoId) {
+      return '_global';
+    }
+    // Sanitize repoId for use as folder name
+    return repoId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+
+  /**
+   * Ensure project subfolder exists
+   */
+  private ensureProjectFolder(projectFolder: string): string {
+    const projectPath = path.join(this.memoriesDir, projectFolder);
+    if (!existsSync(projectPath)) {
+      mkdirSync(projectPath, { recursive: true });
+      log(`📁 Created project folder: ${projectFolder}`);
+    }
+    return projectPath;
   }
 
   private initializeDirectories(): void {
@@ -84,11 +115,29 @@ export class MarkdownStorageAdapter implements StorageAdapter {
   }
 
   private getFilePath(id: string): string | null {
-    // Find file by ID prefix (files are named <id>-<slug>.md)
+    // Find file by ID prefix in all project subfolders
     try {
-      const files = readdirSync(this.memoriesDir);
-      const file = files.find((f) => f.startsWith(id + '-') && f.endsWith('.md'));
-      return file ? path.join(this.memoriesDir, file) : null;
+      if (!existsSync(this.memoriesDir)) {
+        return null;
+      }
+
+      // Get all subdirectories (project folders)
+      const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+      const projectFolders = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+
+      // Search in each project folder
+      for (const projectFolder of projectFolders) {
+        const projectPath = path.join(this.memoriesDir, projectFolder);
+        const files = readdirSync(projectPath);
+        const file = files.find((f) => f.startsWith(id + '-') && f.endsWith('.md'));
+        if (file) {
+          return path.join(projectPath, file);
+        }
+      }
+
+      return null;
     } catch (error) {
       return null;
     }
@@ -116,16 +165,20 @@ export class MarkdownStorageAdapter implements StorageAdapter {
       // Convert item to markdown
       const markdown = itemToMarkdown(item);
 
+      // Get project folder and ensure it exists
+      const projectFolder = this.getProjectFolder(item);
+      const projectPath = this.ensureProjectFolder(projectFolder);
+
       // Generate filename
       const filename = generateFilename(item);
-      const filePath = path.join(this.memoriesDir, filename);
+      const filePath = path.join(projectPath, filename);
 
-      // Check if file already exists with different name (rename scenario)
+      // Check if file already exists with different name or location (rename/move scenario)
       const existingPath = this.getFilePath(item.id);
       if (existingPath && existingPath !== filePath) {
         // Delete old file
         unlinkSync(existingPath);
-        log(`🔄 Renamed memory file: ${path.basename(existingPath)} → ${filename}`);
+        log(`🔄 Moved/renamed memory: ${path.basename(existingPath)} → ${projectFolder}/${filename}`);
       }
 
       // Write markdown file
@@ -135,7 +188,7 @@ export class MarkdownStorageAdapter implements StorageAdapter {
       this.catalog[item.id] = this.itemToSummary(item);
       this.saveCatalog();
 
-      log(`✅ Wrote memory: ${item.id} (${filename})`);
+      log(`✅ Wrote memory: ${item.id} → ${projectFolder}/${filename}`);
     } catch (error) {
       log(`❌ Failed to write item ${item.id}: ${error}`);
       throw error;
@@ -204,11 +257,20 @@ export class MarkdownStorageAdapter implements StorageAdapter {
 
   // Catalog operations
   readCatalog(): Record<string, MemoryItemSummary> {
-    // Check if catalog is empty but files exist
+    // Check if catalog is empty but files exist in subfolders
     if (Object.keys(this.catalog).length === 0 && existsSync(this.memoriesDir)) {
-      const files = readdirSync(this.memoriesDir).filter((f) => f.endsWith('.md'));
-      if (files.length > 0) {
-        log(`🔧 Found ${files.length} markdown files without catalog, rebuilding...`);
+      const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+      const hasFiles = entries.some((entry) => {
+        if (entry.isDirectory()) {
+          const projectPath = path.join(this.memoriesDir, entry.name);
+          const files = readdirSync(projectPath).filter((f) => f.endsWith('.md'));
+          return files.length > 0;
+        }
+        return false;
+      });
+
+      if (hasFiles) {
+        log(`🔧 Found markdown files without catalog, rebuilding...`);
         this.rebuildCatalog();
       }
     }
@@ -221,37 +283,56 @@ export class MarkdownStorageAdapter implements StorageAdapter {
   }
 
   async rebuildCatalog(): Promise<void> {
-    log('🔄 Rebuilding catalog from markdown files...');
+    log('🔄 Rebuilding catalog from markdown files in all project folders...');
 
     try {
-      const files = readdirSync(this.memoriesDir).filter((f) => f.endsWith('.md'));
+      if (!existsSync(this.memoriesDir)) {
+        this.catalog = {};
+        this.saveCatalog();
+        return;
+      }
+
       const newCatalog: Record<string, MemoryItemSummary> = {};
+      let fileCount = 0;
 
-      for (const file of files) {
-        try {
-          const filePath = path.join(this.memoriesDir, file);
-          const markdown = readFileSync(filePath, 'utf-8');
+      // Get all project folders
+      const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+      const projectFolders = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
 
-          // Extract ID from filename (format: <id>-<slug>.md)
-          const idMatch = file.match(/^([0-9A-Z]{26})-/);
-          const id = idMatch ? idMatch[1] : null;
+      // Scan each project folder
+      for (const projectFolder of projectFolders) {
+        const projectPath = path.join(this.memoriesDir, projectFolder);
+        const files = readdirSync(projectPath).filter((f) => f.endsWith('.md'));
 
-          if (!id) {
-            log(`⚠️  Skipping file with invalid name format: ${file}`);
-            continue;
+        for (const file of files) {
+          try {
+            const filePath = path.join(projectPath, file);
+            const markdown = readFileSync(filePath, 'utf-8');
+
+            // Extract ID from filename (format: <id>-<slug>.md)
+            const idMatch = file.match(/^([0-9A-Z]{26})-/);
+            const id = idMatch ? idMatch[1] : null;
+
+            if (!id) {
+              log(`⚠️  Skipping file with invalid name format: ${projectFolder}/${file}`);
+              continue;
+            }
+
+            const item = markdownToItem(markdown, id);
+            newCatalog[id] = this.itemToSummary(item);
+            fileCount++;
+          } catch (error) {
+            log(`⚠️  Failed to parse ${projectFolder}/${file}: ${error}`);
           }
-
-          const item = markdownToItem(markdown, id);
-          newCatalog[id] = this.itemToSummary(item);
-        } catch (error) {
-          log(`⚠️  Failed to parse ${file}: ${error}`);
         }
       }
 
       this.catalog = newCatalog;
       this.saveCatalog();
 
-      log(`✅ Rebuilt catalog with ${Object.keys(newCatalog).length} items`);
+      log(`✅ Rebuilt catalog with ${fileCount} items from ${projectFolders.length} project folders`);
     } catch (error) {
       log(`❌ Failed to rebuild catalog: ${error}`);
       throw error;
@@ -288,16 +369,26 @@ export class MarkdownStorageAdapter implements StorageAdapter {
     let itemCount = 0;
 
     if (existsSync(this.memoriesDir)) {
-      const files = readdirSync(this.memoriesDir).filter((f) => f.endsWith('.md'));
-      itemCount = files.length;
+      // Get all project folders
+      const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+      const projectFolders = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
 
-      for (const file of files) {
-        try {
-          const filePath = path.join(this.memoriesDir, file);
-          const stats = statSync(filePath);
-          totalSize += stats.size;
-        } catch (error) {
-          // Skip files that can't be read
+      // Count files in each project folder
+      for (const projectFolder of projectFolders) {
+        const projectPath = path.join(this.memoriesDir, projectFolder);
+        const files = readdirSync(projectPath).filter((f) => f.endsWith('.md'));
+        itemCount += files.length;
+
+        for (const file of files) {
+          try {
+            const filePath = path.join(projectPath, file);
+            const stats = statSync(filePath);
+            totalSize += stats.size;
+          } catch (error) {
+            // Skip files that can't be read
+          }
         }
       }
     }
@@ -310,18 +401,29 @@ export class MarkdownStorageAdapter implements StorageAdapter {
 
   async cleanup(): Promise<number> {
     // Markdown storage doesn't accumulate temp files like FileStore
-    // Just verify catalog matches actual files
+    // Just verify catalog matches actual files in all subfolders
     let cleaned = 0;
 
     const catalogIds = new Set(Object.keys(this.catalog));
     const fileIds = new Set<string>();
 
     if (existsSync(this.memoriesDir)) {
-      const files = readdirSync(this.memoriesDir).filter((f) => f.endsWith('.md'));
-      for (const file of files) {
-        const idMatch = file.match(/^([0-9A-Z]{26})-/);
-        if (idMatch) {
-          fileIds.add(idMatch[1]);
+      // Get all project folders
+      const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+      const projectFolders = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+
+      // Scan each project folder
+      for (const projectFolder of projectFolders) {
+        const projectPath = path.join(this.memoriesDir, projectFolder);
+        const files = readdirSync(projectPath).filter((f) => f.endsWith('.md'));
+
+        for (const file of files) {
+          const idMatch = file.match(/^([0-9A-Z]{26})-/);
+          if (idMatch) {
+            fileIds.add(idMatch[1]);
+          }
         }
       }
     }
@@ -403,13 +505,24 @@ export class MarkdownStorageAdapter implements StorageAdapter {
       return [];
     }
 
-    const files = readdirSync(this.memoriesDir).filter((f) => f.endsWith('.md'));
     const ids: string[] = [];
 
-    for (const file of files) {
-      const idMatch = file.match(/^([0-9A-Z]{26})-/);
-      if (idMatch) {
-        ids.push(idMatch[1]);
+    // Get all project folders
+    const entries = readdirSync(this.memoriesDir, { withFileTypes: true });
+    const projectFolders = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+
+    // Scan each project folder
+    for (const projectFolder of projectFolders) {
+      const projectPath = path.join(this.memoriesDir, projectFolder);
+      const files = readdirSync(projectPath).filter((f) => f.endsWith('.md'));
+
+      for (const file of files) {
+        const idMatch = file.match(/^([0-9A-Z]{26})-/);
+        if (idMatch) {
+          ids.push(idMatch[1]);
+        }
       }
     }
 

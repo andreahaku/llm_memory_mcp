@@ -291,13 +291,24 @@ export class MemoryManager {
         }
       }
 
-      // Check for markdown storage indicators (memories/ directory with .md files)
-      const memoriesDir = path.join(dir, 'memories');
+      // Check for markdown storage indicators (_LLM_memories/ directory with project subfolders)
+      const memoriesDir = path.join(dir, '_LLM_memories');
       if (fs.existsSync(memoriesDir)) {
         try {
-          const files = fs.readdirSync(memoriesDir);
-          if (files.some(f => f.endsWith('.md'))) {
-            return 'markdown';
+          const entries = fs.readdirSync(memoriesDir, { withFileTypes: true });
+          // Check if there are any subdirectories (project folders)
+          const hasProjectFolders = entries.some(entry => entry.isDirectory());
+          if (hasProjectFolders) {
+            // Verify at least one project folder contains .md files
+            for (const entry of entries) {
+              if (entry.isDirectory()) {
+                const projectPath = path.join(memoriesDir, entry.name);
+                const projectFiles = fs.readdirSync(projectPath);
+                if (projectFiles.some(f => f.endsWith('.md'))) {
+                  return 'markdown';
+                }
+              }
+            }
           }
         } catch (error) {
           log(`Failed to check markdown storage directory at ${memoriesDir}:`, error);
