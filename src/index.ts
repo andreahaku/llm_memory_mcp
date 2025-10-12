@@ -15,6 +15,8 @@ import {
 
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import { getToolConfig } from './toolConfig.js';
+import { getEnabledTools } from './toolDefinitions.js';
 
 // Import MigrationManager conditionally to avoid FFmpeg dependency issues
 let MigrationManagerClass: any = null;
@@ -40,6 +42,7 @@ class LLMKnowledgeBaseServer {
   private memory: MemoryManager;
   private migration: any;
   private isShuttingDown = false;
+  private toolConfig = getToolConfig();
 
   constructor() {
     this.server = new Server(
@@ -52,6 +55,16 @@ class LLMKnowledgeBaseServer {
     log('Initializing LLM Memory MCP server');
     this.memory = new MemoryManager();
     this.migration = null; // Will be initialized on first use if available
+
+    // Log enabled tool groups
+    const enabledGroups = Object.entries(this.toolConfig)
+      .filter(([_, enabled]) => enabled)
+      .map(([group, _]) => group);
+    log(`🔧 Tool groups enabled: ${enabledGroups.join(', ')}`);
+    if (!this.toolConfig.vectors && !this.toolConfig.migration && !this.toolConfig.journal && !this.toolConfig.maintenance) {
+      log('💡 Tip: Enable optional tools with LLM_MEMORY_TOOLS=vectors,migration,journal,maintenance');
+    }
+
     this.setupServerEventLogging();
     this.setupGracefulShutdown();
     this.setupHandlers();
@@ -189,488 +202,14 @@ class LLMKnowledgeBaseServer {
   }
 
   private setupHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'memory.upsert',
-          description: 'Create or update a memory item',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              type: { type: 'string', enum: ['snippet','pattern','config','insight','runbook','fact','note'] },
-              scope: { type: 'string', enum: ['global','local','committed'] },
-              title: { type: 'string' },
-              text: { type: 'string' },
-              code: { type: 'string' },
-              language: { type: 'string' },
-              tags: { type: 'array', items: { type: 'string' } },
-              files: { type: 'array', items: { type: 'string' } },
-              symbols: { type: 'array', items: { type: 'string' } },
-              confidence: { type: 'number' },
-              pinned: { type: 'boolean' },
-              sensitivity: { type: 'string', enum: ['public','team','private'] },
-            },
-            required: ['type','scope'],
-            additionalProperties: true,
-          },
-        },
-        {
-          name: 'memory.patch',
-          description: 'Apply incremental text replacements to a memory item without full rewrite',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Memory item ID to patch' },
-              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' },
-              operations: {
-                type: 'array',
-                description: 'Array of patch operations to apply',
-                items: {
-                  type: 'object',
-                  properties: {
-                    field: { type: 'string', enum: ['title','text','code'], description: 'Field to modify' },
-                    old: { type: 'string', description: 'Text to replace (must match exactly)' },
-                    new: { type: 'string', description: 'Replacement text' },
-                  },
-                  required: ['field', 'old', 'new']
-                }
-              }
-            },
-            required: ['id', 'operations'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.append',
-          description: 'Append content to a memory item\'s text or code field',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Memory item ID' },
-              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' },
-              field: { type: 'string', enum: ['text','code'], description: 'Field to append to' },
-              content: { type: 'string', description: 'Content to append' },
-              separator: { type: 'string', description: 'Separator to add before content (default: "\\n\\n")' },
-            },
-            required: ['id', 'field', 'content'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.merge',
-          description: 'Merge multiple memory items into one, combining their content intelligently',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              sourceIds: { type: 'array', items: { type: 'string' }, description: 'IDs of memories to merge' },
-              targetId: { type: 'string', description: 'Optional target ID (if omitted, creates new memory)' },
-              scope: { type: 'string', enum: ['global','local','committed'], description: 'Scope for merged item' },
-              strategy: {
-                type: 'string',
-                enum: ['concat', 'deduplicate', 'prioritize-first', 'prioritize-recent'],
-                description: 'Merge strategy (default: deduplicate)'
-              },
-              deleteSource: { type: 'boolean', description: 'Delete source items after merge (default: false)' },
-            },
-            required: ['sourceIds', 'scope'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'vectors.set',
-          description: 'Set or update a vector embedding for an item',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              scope: { type: 'string', enum: ['global','local','committed'] },
-              vector: { type: 'array', items: { type: 'number' } }
-            },
-            required: ['id','scope','vector'],
-            additionalProperties: false
-          },
-        },
-        {
-          name: 'vectors.importBulk',
-          description: 'Bulk import vectors for items (enforces consistent dimension)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed'] },
-              items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, vector: { type: 'array', items: { type: 'number' } } }, required: ['id','vector'] } },
-              dim: { type: 'number' }
-            },
-            required: ['scope','items'],
-            additionalProperties: false
-          },
-        },
-        {
-          name: 'vectors.importJsonl',
-          description: 'Bulk import vectors from JSONL file; optional dimension override',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed'] },
-              path: { type: 'string' },
-              dim: { type: 'number' }
-            },
-            required: ['scope','path'],
-            additionalProperties: false
-          },
-        },
-        {
-          name: 'vectors.remove',
-          description: 'Remove a vector embedding for an item',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              scope: { type: 'string', enum: ['global','local','committed'] }
-            },
-            required: ['id','scope'],
-            additionalProperties: false
-          },
-        },
-        {
-          name: 'memory.get',
-          description: 'Fetch a memory item by id',
-          inputSchema: {
-            type: 'object',
-            properties: { id: { type: 'string' }, scope: { type: 'string', enum: ['global','local','committed'] } },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.delete',
-          description: 'Delete a memory item by id',
-          inputSchema: {
-            type: 'object',
-            properties: { id: { type: 'string' }, scope: { type: 'string', enum: ['global','local','committed'] } },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.list',
-          description: 'List memory summaries',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed','project','all'] },
-              limit: { type: 'number' },
-            },
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.query',
-          description: 'Search memory with filters and ranking',
-          inputSchema: { type: 'object' },
-        },
-        {
-          name: 'memory.link',
-          description: 'Link two memory items',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              from: { type: 'string' },
-              to: { type: 'string' },
-              rel: { type: 'string', enum: ['refines','duplicates','depends','fixes','relates'] },
-            },
-            required: ['from','to','rel'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.pin',
-          description: 'Pin a memory item for priority ranking',
-          inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-        },
-        {
-          name: 'memory.unpin',
-          description: 'Unpin a memory item',
-          inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-        },
-        {
-          name: 'memory.tag',
-          description: 'Add or remove tags from a memory item',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              add: { type: 'array', items: { type: 'string' } },
-              remove: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.contextPack',
-          description: 'Build an IDE-ready context pack from top-k results',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              q: { type: 'string' },
-              scope: { type: 'string', enum: ['global','local','committed','project','all'] },
-              k: { type: 'number' },
-              filters: { type: 'object' },
-              snippetWindow: { type: 'object', properties: { before: { type: 'number' }, after: { type: 'number' } } },
-              snippetLanguages: { type: 'array', items: { type: 'string' } },
-              snippetFilePatterns: { type: 'array', items: { type: 'string' } },
-              maxChars: { type: 'number', description: 'Optional content-length budget for the pack' }
-              , tokenBudget: { type: 'number', description: 'Optional token budget (~4 chars per token heuristic)' }
-            },
-            additionalProperties: true,
-          },
-        },
-        {
-          name: 'project.info',
-          description: 'Get current project information',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-        },
-        {
-          name: 'project.initCommitted',
-          description: 'Initialize committed memory under .llm-memory/',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-        },
-        {
-          name: 'project.config.get',
-          description: 'Read memory config (scope default: committed if available else local)',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed'] } }, additionalProperties: false },
-        },
-        {
-          name: 'project.config.set',
-          description: 'Write memory config to scope',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed'] }, config: { type: 'object' } }, required: ['scope','config'] },
-        },
-        {
-          name: 'project.sync.status',
-          description: 'Show differences between local and committed memories',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-        },
-        {
-          name: 'project.sync.merge',
-          description: 'Merge from local -> committed with sensitivity enforcement',
-          inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.rebuild',
-          description: 'Rebuild catalog and inverted index from on-disk items',
-          inputSchema: {
-            type: 'object',
-            properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } },
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'maintenance.replay',
-          description: 'Replay journal to rebuild catalog/index (optionally compact)',
-          inputSchema: {
-            type: 'object',
-            properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] }, compact: { type: 'boolean' } },
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'maintenance.compact',
-          description: 'Compact journal by writing current state and truncating journal',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.snapshot',
-          description: 'Write a snapshot marker (record lastTs) for fast startup replay',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.verify',
-          description: 'Recompute checksum and compare with snapshot state; report consistency',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.compact.now',
-          description: 'Trigger immediate compaction for a scope (alias of maintenance.compact)',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.compactSnapshot',
-          description: 'One-click compaction + snapshot for fast recovery',
-          inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['global','local','committed','project','all'] } }, additionalProperties: false },
-        },
-        {
-          name: 'maintenance.prune',
-          description: 'Remove expired memories based on TTL (time-to-live)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed','project','all'], description: 'Scope to prune' },
-              dryRun: { type: 'boolean', description: 'Preview what would be deleted without actually deleting' },
-            },
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.renew',
-          description: 'Extend TTL for active memories',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Memory item ID' },
-              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope' },
-              ttlDays: { type: 'number', description: 'New TTL in days (if omitted, extends by original TTL)' },
-            },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.feedback',
-          description: 'Record user feedback (helpful/not helpful) for a memory item',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              helpful: { type: 'boolean' },
-              scope: { type: 'string', enum: ['global','local','committed'] },
-            },
-            required: ['id', 'helpful'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'memory.use',
-          description: 'Record usage/access of a memory item for confidence scoring',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              scope: { type: 'string', enum: ['global','local','committed'] },
-            },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'journal.stats',
-          description: 'Get journal statistics and optimization status',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed','all'] },
-            },
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'journal.migrate',
-          description: 'Migrate legacy journal to optimized hash-based format',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed','all'] },
-            },
-            required: ['scope'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'journal.verify',
-          description: 'Verify integrity using optimized journal hashes',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global','local','committed','all'] },
-            },
-            required: ['scope'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'migration.storage_backend',
-          description: 'Migrate storage between file and video backends within same scope',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              sourceBackend: { type: 'string', enum: ['file', 'video'] },
-              targetBackend: { type: 'string', enum: ['file', 'video'] },
-              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              dryRun: { type: 'boolean', description: 'Preview migration without executing' },
-              validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
-              backupBeforeMigration: { type: 'boolean', description: 'Create backup before migration' },
-            },
-            required: ['sourceBackend', 'targetBackend', 'scope'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'migration.scope',
-          description: 'Migrate filtered items between memory scopes (global/local/committed)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              sourceScope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              targetScope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              contentFilter: {
-                type: 'object',
-                properties: {
-                  query: { type: 'string', description: 'Search query to match in title/text/code' },
-                  tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
-                  types: { type: 'array', items: { type: 'string', enum: ['snippet','pattern','config','insight','runbook','fact','note'] }, description: 'Memory types to include' },
-                  titlePatterns: { type: 'array', items: { type: 'string' }, description: 'Regex patterns for title matching' },
-                  contentPatterns: { type: 'array', items: { type: 'string' }, description: 'Regex patterns for content matching' },
-                  files: { type: 'array', items: { type: 'string' }, description: 'File paths to filter by' },
-                  dateRange: {
-                    type: 'object',
-                    properties: {
-                      start: { type: 'string', format: 'date-time' },
-                      end: { type: 'string', format: 'date-time' }
-                    },
-                    required: ['start', 'end'],
-                    description: 'Date range for filtering items'
-                  }
-                },
-                additionalProperties: false
-              },
-              storageBackend: { type: 'string', enum: ['file', 'video'], description: 'Storage backend to use' },
-              dryRun: { type: 'boolean', description: 'Preview migration without executing' },
-              validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
-            },
-            required: ['sourceScope', 'targetScope'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'migration.status',
-          description: 'Get migration status and storage statistics for a scope',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
-            },
-            required: ['scope', 'backend'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'migration.validate',
-          description: 'Validate migration integrity and consistency',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
-              expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
-            },
-            required: ['scope', 'backend'],
-            additionalProperties: false,
-          },
-        },
-      ],
-    }));
+    // Use optimized tool definitions based on configuration
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools = getEnabledTools(this.toolConfig);
+      log(`📋 Returning ${tools.length} enabled tools`);
+      return { tools };
+    });
 
+    // CallToolRequestSchema handler (handles all tools regardless of config)
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       const startTime = Date.now();
@@ -689,7 +228,7 @@ class LLMKnowledgeBaseServer {
 
       try {
         switch (name) {
-          case 'memory.upsert': {
+          case 'mem.upsert': {
             const scope = args.scope as MemoryScope;
             const type = args.type as MemoryType;
             const title = args.title as string || '(no title)';
@@ -704,15 +243,15 @@ class LLMKnowledgeBaseServer {
               code: args.code as string | undefined,
               language: args.language as string | undefined,
               facets: { tags: (args.tags as string[]) || [], files: (args.files as string[]) || [], symbols: (args.symbols as string[]) || [] },
-              quality: { confidence: (args.confidence as number) ?? 0.75, reuseCount: 0, pinned: (args.pinned as boolean) ?? false },
-              security: { sensitivity: (args.sensitivity as any) || 'private' },
+              quality: { confidence: (args.conf as number) ?? 0.75, reuseCount: 0, pinned: (args.pinned as boolean) ?? false },
+              security: { sensitivity: (args.sens as any) || 'private' },
             } as any);
 
             log(`Memory upserted successfully: id=${id}, scope=${scope}`);
-            return { content: [{ type: 'text', text: `memory.upsert: ${id}` }] };
+            return { content: [{ type: 'text', text: `mem.upsert: ${id}` }] };
           }
 
-          case 'memory.patch': {
+          case 'mem.patch': {
             const id = args.id as string;
             const scope = args.scope as MemoryScope | undefined;
             const operations = args.operations as Array<{ field: 'title' | 'text' | 'code'; old: string; new: string }>;
@@ -748,17 +287,17 @@ class LLMKnowledgeBaseServer {
 
             if (!modified) {
               log(`No patches applied to ${id}`);
-              return { content: [{ type: 'text', text: `memory.patch: ${id} (no changes)` }] };
+              return { content: [{ type: 'text', text: `mem.patch: ${id} (no changes)` }] };
             }
 
             // Update item (creates new frame in video storage)
             await this.memory.upsert(item);
 
             log(`Memory patched successfully: id=${id}, ${operations.length} operations applied`);
-            return { content: [{ type: 'text', text: `memory.patch: ${id} updated` }] };
+            return { content: [{ type: 'text', text: `mem.patch: ${id} updated` }] };
           }
 
-          case 'memory.append': {
+          case 'mem.append': {
             const id = args.id as string;
             const scope = args.scope as MemoryScope | undefined;
             const field = args.field as 'text' | 'code';
@@ -782,10 +321,10 @@ class LLMKnowledgeBaseServer {
             await this.memory.upsert(item);
 
             log(`Memory appended successfully: id=${id}, new ${field} length=${(item[field] as string).length}`);
-            return { content: [{ type: 'text', text: `memory.append: ${id} updated` }] };
+            return { content: [{ type: 'text', text: `mem.append: ${id} updated` }] };
           }
 
-          case 'memory.merge': {
+          case 'mem.merge': {
             const sourceIds = args.sourceIds as string[];
             const targetId = args.targetId as string | undefined;
             const scope = args.scope as MemoryScope;
@@ -884,10 +423,10 @@ class LLMKnowledgeBaseServer {
             }
 
             log(`Memory merge completed: result=${finalId}, strategy=${strategy}`);
-            return { content: [{ type: 'text', text: `memory.merge: ${finalId}` }] };
+            return { content: [{ type: 'text', text: `mem.merge: ${finalId}` }] };
           }
 
-          case 'memory.get': {
+          case 'mem.get': {
             const scope = args.scope ? ` scope=${args.scope}` : ' (any scope)';
             log(`Reading memory: id=${args.id}${scope}`);
 
@@ -901,7 +440,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(item, null, 2) }] };
           }
 
-          case 'memory.delete': {
+          case 'mem.delete': {
             const scope = args.scope ? ` scope=${args.scope}` : ' (any scope)';
             log(`Deleting memory: id=${args.id}${scope}`);
 
@@ -912,10 +451,10 @@ class LLMKnowledgeBaseServer {
             }
 
             log(`Memory deleted successfully: id=${args.id}`);
-            return { content: [{ type: 'text', text: `memory.delete: ${args.id}` }] };
+            return { content: [{ type: 'text', text: `mem.delete: ${args.id}` }] };
           }
 
-          case 'memory.list': {
+          case 'mem.list': {
             const scope = args.scope || 'project';
             const limit = args.limit || 'all';
             log(`Listing memories: scope=${scope}, limit=${limit}`);
@@ -926,7 +465,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify({ total: list.length, items: list }, null, 2) }] };
           }
 
-          case 'memory.query': {
+          case 'mem.query': {
             const query = args as MemoryQuery;
             const scope = query.scope || 'project';
             const searchTerm = query.q || '(no query)';
@@ -939,62 +478,62 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
-          case 'memory.link': {
+          case 'mem.link': {
             const ok = await this.memory.link(args.from as string, args.rel as any, args.to as string);
-            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.link failed for ${args.from} -> ${args.to}`);
+            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `mem.link failed for ${args.from} -> ${args.to}`);
             return { content: [{ type: 'text', text: 'memory.link: ok' }] };
           }
 
-          case 'memory.pin': {
+          case 'mem.pin': {
             const ok = await this.memory.setPinned(args.id as string, true);
-            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.pin failed for ${args.id}`);
+            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `mem.pin failed for ${args.id}`);
             return { content: [{ type: 'text', text: 'memory.pin: ok' }] };
           }
 
-          case 'memory.unpin': {
+          case 'mem.unpin': {
             const ok = await this.memory.setPinned(args.id as string, false);
-            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.unpin failed for ${args.id}`);
+            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `mem.unpin failed for ${args.id}`);
             return { content: [{ type: 'text', text: 'memory.unpin: ok' }] };
           }
 
-          case 'memory.tag': {
+          case 'mem.tag': {
             const ok = await this.memory.tag(args.id as string, args.add as string[] | undefined, args.remove as string[] | undefined);
-            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `memory.tag failed for ${args.id}`);
+            if (!ok) throw new McpError(ErrorCode.InvalidRequest, `mem.tag failed for ${args.id}`);
             return { content: [{ type: 'text', text: 'memory.tag: ok' }] };
           }
 
-          case 'vectors.set': {
+          case 'vec.set': {
             const scope = args.scope as MemoryScope;
             await this.memory.setVector(scope, args.id as string, args.vector as number[]);
-            return { content: [{ type: 'text', text: 'vectors.set: ok' }] };
+            return { content: [{ type: 'text', text: 'vec.set: ok' }] };
           }
 
-          case 'vectors.remove': {
+          case 'vec.remove': {
             const scope = args.scope as MemoryScope;
             this.memory.removeVector(scope, args.id as string);
-            return { content: [{ type: 'text', text: 'vectors.remove: ok' }] };
+            return { content: [{ type: 'text', text: 'vec.remove: ok' }] };
           }
 
-          case 'vectors.importBulk': {
+          case 'vec.importBulk': {
             const scope = args.scope as MemoryScope;
             const dim = args.dim as number | undefined;
             const res = this.memory.importVectorsBulk(scope, args.items as Array<{ id: string; vector: number[] }>, dim);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'vectors.importJsonl': {
+          case 'vec.importJsonl': {
             const scope = args.scope as MemoryScope;
             const dim = args.dim as number | undefined;
             const res = this.memory.importVectorsFromJsonl(scope, args.path as string, dim);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'memory.contextPack': {
+          case 'mem.contextPack': {
             const pack = await this.memory.contextPack(args as any);
             return { content: [{ type: 'text', text: JSON.stringify(pack, null, 2) }] };
           }
 
-          case 'project.info': {
+          case 'proj.info': {
             log('Getting project information');
             const info = this.memory.getProjectInfo();
 
@@ -1006,7 +545,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] };
           }
 
-          case 'project.initCommitted': {
+          case 'proj.initCommitted': {
             log('Initializing committed memory');
             const dir = this.memory.initCommittedMemory();
 
@@ -1014,14 +553,14 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: `Committed memory initialized at: ${dir}` }] };
           }
 
-          case 'project.config.get': {
+          case 'proj.config.get': {
             const defaultScope: MemoryScope = 'committed';
             const scope = (args.scope as MemoryScope) || defaultScope;
             const cfg = this.memory.readConfig(scope);
             return { content: [{ type: 'text', text: JSON.stringify(cfg, null, 2) }] };
           }
 
-          case 'project.config.set': {
+          case 'proj.config.set': {
             const scope = args.scope as MemoryScope;
             const config = args.config as any;
 
@@ -1035,20 +574,20 @@ class LLMKnowledgeBaseServer {
             }
 
             this.memory.writeConfig(scope, config);
-            return { content: [{ type: 'text', text: 'project.config.set: ok' }] };
+            return { content: [{ type: 'text', text: 'proj.config.set: ok' }] };
           }
 
-          case 'project.sync.status': {
+          case 'proj.sync.status': {
             const status = await this.memory.syncStatus();
             return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
           }
 
-          case 'project.sync.merge': {
+          case 'proj.sync.merge': {
             const res = await this.memory.syncMerge(args.ids as string[] | undefined);
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.rebuild': {
+          case 'maint.rebuild': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = await this.memory.rebuildAll();
@@ -1063,7 +602,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.replay': {
+          case 'maint.replay': {
             const scope = (args.scope as string) || 'project';
             const compact = !!args.compact;
             if (scope === 'all') {
@@ -1079,7 +618,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.compact': {
+          case 'maint.compact': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = await this.memory.replayAllFromJournal(true);
@@ -1094,7 +633,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.compact.now': {
+          case 'maint.compact.now': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = await this.memory.replayAllFromJournal(true);
@@ -1109,7 +648,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.snapshot': {
+          case 'maint.snapshot': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') { this.memory.snapshotAll(); return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scopes: ['committed','local','global'] }, null, 2) }] }; }
             if (scope === 'project') { this.memory.snapshotProject(); return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scopes: ['committed','local'] }, null, 2) }] }; }
@@ -1117,7 +656,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify({ ok: true, scope }, null, 2) }] };
           }
 
-          case 'maintenance.verify': {
+          case 'maint.verify': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = this.memory.verifyAll();
@@ -1132,7 +671,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
-          case 'maintenance.compactSnapshot': {
+          case 'maint.compactSnapshot': {
             const scope = (args.scope as string) || 'project';
             if (scope === 'all') {
               const res = await this.memory.replayAllFromJournal(true);
@@ -1149,9 +688,9 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify({ compacted: res, snapshotted: true }, null, 2) }] };
           }
 
-          case 'maintenance.prune': {
+          case 'maint.prune': {
             const scope = (args.scope as string) || 'project';
-            const dryRun = (args.dryRun as boolean) || false;
+            const dryRun = (args.dry as boolean) || false;
 
             log(`Pruning expired memories: scope=${scope}, dryRun=${dryRun}`);
 
@@ -1205,10 +744,10 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
-          case 'memory.renew': {
+          case 'mem.renew': {
             const id = args.id as string;
             const scope = args.scope as MemoryScope | undefined;
-            const ttlDays = args.ttlDays as number | undefined;
+            const ttlDays = args.ttl as number | undefined;
 
             log(`Renewing memory TTL: id=${id}${scope ? `, scope=${scope}` : ''}${ttlDays ? `, ttlDays=${ttlDays}` : ''}`);
 
@@ -1231,10 +770,10 @@ class LLMKnowledgeBaseServer {
             await this.memory.upsert(item);
 
             log(`Memory TTL renewed: id=${id}, ttlDays=${newTtl}, expiresAt=${newExpiresAt}`);
-            return { content: [{ type: 'text', text: `memory.renew: ${id} (ttl=${newTtl} days, expires=${newExpiresAt})` }] };
+            return { content: [{ type: 'text', text: `mem.renew: ${id} (ttl=${newTtl} days, expires=${newExpiresAt})` }] };
           }
 
-          case 'memory.feedback': {
+          case 'mem.feedback': {
             const id = args.id as string;
             const helpful = args.helpful as boolean;
             const scope = args.scope as MemoryScope | undefined;
@@ -1253,7 +792,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: 'memory.feedback: ok' }] };
           }
 
-          case 'memory.use': {
+          case 'mem.use': {
             const id = args.id as string;
             const scope = args.scope as MemoryScope | undefined;
 
@@ -1271,7 +810,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: 'memory.use: ok' }] };
           }
 
-          case 'journal.stats': {
+          case 'jour.stats': {
             const scope = args.scope as string || 'all';
 
             log(`Getting journal stats: scope=${scope}`);
@@ -1285,7 +824,7 @@ class LLMKnowledgeBaseServer {
             }
           }
 
-          case 'journal.migrate': {
+          case 'jour.migrate': {
             const scope = args.scope as string;
 
             log(`Migrating journal to optimized format: scope=${scope}`);
@@ -1301,7 +840,7 @@ class LLMKnowledgeBaseServer {
             }
           }
 
-          case 'journal.verify': {
+          case 'jour.verify': {
             const scope = args.scope as string;
 
             log(`Verifying journal integrity: scope=${scope}`);
@@ -1333,7 +872,7 @@ class LLMKnowledgeBaseServer {
             }
           }
 
-          case 'migration.storage_backend': {
+          case 'mig.storage_backend': {
             const mgr = await this.initializeMigrationManager();
             if (!mgr) {
               throw new McpError(
@@ -1341,12 +880,12 @@ class LLMKnowledgeBaseServer {
                 'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
               );
             }
-            const sourceBackend = args.sourceBackend as 'file' | 'video';
-            const targetBackend = args.targetBackend as 'file' | 'video';
+            const sourceBackend = args.srcBack as 'file' | 'video';
+            const targetBackend = args.tgtBack as 'file' | 'video';
             const scope = args.scope as MemoryScope;
-            const dryRun = args.dryRun as boolean || false;
-            const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
-            const backupBeforeMigration = args.backupBeforeMigration as boolean ?? true;
+            const dryRun = args.dry as boolean || false;
+            const validateAfterMigration = args.validateAfter as boolean ?? true;
+            const backupBeforeMigration = args.backupBefore as boolean ?? true;
 
             log(`Starting storage migration: ${sourceBackend} → ${targetBackend} for ${scope} scope${dryRun ? ' (DRY RUN)' : ''}`);
 
@@ -1387,7 +926,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
           }
 
-          case 'migration.scope': {
+          case 'mig.scope': {
             const mgr = await this.initializeMigrationManager();
             if (!mgr) {
               throw new McpError(
@@ -1395,12 +934,12 @@ class LLMKnowledgeBaseServer {
                 'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
               );
             }
-            const sourceScope = args.sourceScope as MemoryScope;
-            const targetScope = args.targetScope as MemoryScope;
+            const sourceScope = args.srcScope as MemoryScope;
+            const targetScope = args.tgtScope as MemoryScope;
             const contentFilter = args.contentFilter as any;
-            const storageBackend = (args.storageBackend as 'file' | 'video') || 'file';
-            const dryRun = args.dryRun as boolean || false;
-            const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
+            const storageBackend = (args.storeBack as 'file' | 'video') || 'file';
+            const dryRun = args.dry as boolean || false;
+            const validateAfterMigration = args.validateAfter as boolean ?? true;
 
             log(`Starting scope migration: ${sourceScope} → ${targetScope}${dryRun ? ' (DRY RUN)' : ''}`);
 
@@ -1448,7 +987,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
           }
 
-          case 'migration.status': {
+          case 'mig.status': {
             const mgr = await this.initializeMigrationManager();
             if (!mgr) {
               throw new McpError(
@@ -1467,7 +1006,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
           }
 
-          case 'migration.validate': {
+          case 'mig.validate': {
             const mgr = await this.initializeMigrationManager();
             if (!mgr) {
               throw new McpError(

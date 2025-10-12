@@ -97,8 +97,8 @@ pnpm start
 
 - Codex CLI
 ```bash
-codex config set mcp.servers.llm-memory.command "node"
-codex config set mcp.servers.llm-memory.args "['/absolute/path/to/llm-memory-mcp/dist/index.js']"
+codex config set mcp.servers.llm-mem.command "node"
+codex config set mcp.servers.llm-mem.args "['/absolute/path/to/llm-memory-mcp/dist/index.js']"
 ```
 
 ## Development Knowledge Manager Agent
@@ -330,12 +330,12 @@ The system provides seamless migration between file and video storage:
 
 **Check Migration Status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "mig.status", "arguments": { "scope": "local", "backend": "video" } }
 ```
 
 **Migrate to Video Storage:**
 ```json
-{ "name": "migration.storage.backend", "arguments": {
+{ "name": "mig.storage.backend", "arguments": {
   "sourceBackend": "file",
   "targetBackend": "video",
   "scope": "local",
@@ -360,7 +360,7 @@ ffmpeg -version
 which ffmpeg
 
 # Test video encoding capability
-echo '{"name": "maintenance.verify", "arguments": {"scope": "local"}}' | node dist/index.js
+echo '{"name": "maint.verify", "arguments": {"scope": "local"}}' | node dist/index.js
 ```
 
 **Performance Issues:**
@@ -371,13 +371,13 @@ echo '{"name": "maintenance.verify", "arguments": {"scope": "local"}}' | node di
 **Storage Issues:**
 ```bash
 # Check storage backend status
-echo '{"name": "migration.status", "arguments": {"scope": "local"}}' | node dist/index.js
+echo '{"name": "mig.status", "arguments": {"scope": "local"}}' | node dist/index.js
 
 # Validate video storage integrity
-echo '{"name": "migration.validate", "arguments": {"scope": "local", "backend": "video"}}' | node dist/index.js
+echo '{"name": "mig.validate", "arguments": {"scope": "local", "backend": "video"}}' | node dist/index.js
 
 # Get detailed storage metrics
-echo '{"name": "maintenance.verify", "arguments": {"scope": "all"}}' | node dist/index.js
+echo '{"name": "maint.verify", "arguments": {"scope": "all"}}' | node dist/index.js
 ```
 
 **Debug Mode:**
@@ -405,7 +405,7 @@ LLM_MEMORY_FORCE_BACKEND=video pnpm start
     lengths.json      # document lengths
     meta.json         # index metadata
   catalog.json        # id -> MemoryItemSummary
-  journal.ndjson      # legacy append-only change log (auto-migrated)
+  jour.ndjson      # legacy append-only change log (auto-migrated)
   journal-optimized.ndjson  # optimized journal with SHA-256 hashes (95% smaller)
   locks/              # advisory lock files
   tmp/                # atomic write staging
@@ -420,7 +420,7 @@ LLM_MEMORY_FORCE_BACKEND=video pnpm start
     consolidated-index.json # frame-to-content mapping
   index/
     inverted.json          # BM25 search index
-    vectors.bin            # vector embeddings (optional)
+    vec.bin            # vector embeddings (optional)
     meta.json              # index metadata
   catalog.json             # id -> MemoryItemSummary with frame references
   tmp/                     # atomic write staging
@@ -435,62 +435,62 @@ LLM_MEMORY_FORCE_BACKEND=video pnpm start
 
 Initialize committed scope in current project:
 ```json
-{ "name": "project.initCommitted", "arguments": {} }
+{ "name": "proj.initCommitted", "arguments": {} }
 ```
 
 ## MCP Tools
 
 ### Memory Operations
-- memory.upsert — Create/update items
-- memory.get — Fetch by id
-- memory.delete — Delete by id
-- memory.list — List summaries (scope: global|local|committed|project|all)
-- memory.query — Ranked search with filters and top-k
-- memory.contextPack — IDE-ready context pack (see Context Packs below)
-- memory.link — Link items (refines|duplicates|depends|fixes|relates)
-- memory.pin / memory.unpin — Pin/unpin for ranking
-- memory.tag — Add/remove tags
-- **memory.feedback** — Record helpful/not helpful feedback for confidence scoring
-- **memory.use** — Record usage/access events for confidence scoring
-- **memory.patch** — Apply surgical text replacements without full rewrite
-- **memory.append** — Add content to existing memories incrementally
-- **memory.merge** — Combine multiple memories intelligently with deduplication
-- **memory.renew** — Extend TTL for valuable memories
+- mem.upsert — Create/update items
+- mem.get — Fetch by id
+- mem.delete — Delete by id
+- mem.list — List summaries (scope: global|local|committed|project|all)
+- mem.query — Ranked search with filters and top-k
+- mem.contextPack — IDE-ready context pack (see Context Packs below)
+- mem.link — Link items (refines|duplicates|depends|fixes|relates)
+- mem.pin / mem.unpin — Pin/unpin for ranking
+- mem.tag — Add/remove tags
+- **mem.feedback** — Record helpful/not helpful feedback for confidence scoring
+- **mem.use** — Record usage/access events for confidence scoring
+- **mem.patch** — Apply surgical text replacements without full rewrite
+- **mem.append** — Add content to existing memories incrementally
+- **mem.merge** — Combine multiple memories intelligently with deduplication
+- **mem.renew** — Extend TTL for valuable memories
 
 ### Vector Search
-- vectors.set — Set/update an item embedding (for hybrid search)
-- vectors.remove — Remove an item embedding
-- vectors.importBulk — Bulk import vectors (same dimension enforced)
-- vectors.importJsonl — Bulk import vectors from JSONL file; optional dim override
+- vec.set — Set/update an item embedding (for hybrid search)
+- vec.remove — Remove an item embedding
+- vec.importBulk — Bulk import vectors (same dimension enforced)
+- vec.importJsonl — Bulk import vectors from JSONL file; optional dim override
 
 ### Project Management
-- project.info — Project root, repoId, committed status
-- project.initCommitted — Create `.llm-memory` in repo
-- project.config.get — Read `config.json` for a scope
-- project.config.set — Write `config.json` for a scope
-- project.sync.status — Check local vs committed memory differences
-- project.sync.merge — Merge local memories to committed scope
+- proj.info — Project root, repoId, committed status
+- proj.initCommitted — Create `.llm-memory` in repo
+- proj.config.get — Read `config.json` for a scope
+- proj.config.set — Write `config.json` for a scope
+- proj.sync.status — Check local vs committed memory differences
+- proj.sync.merge — Merge local memories to committed scope
 
 ### Maintenance Operations
-- maintenance.rebuild — Rebuild catalog/index from items on disk
-- maintenance.replay — Replay journal; optional compaction
-- maintenance.compact — Compact journal
-- maintenance.compact.now — Trigger immediate compaction
-- maintenance.compactSnapshot — One-click compaction + snapshot
-- maintenance.snapshot — Write snapshot meta (lastTs + checksum)
-- maintenance.verify — Verify current checksum vs snapshot and state-ok markers
-- **maintenance.prune** — Remove expired memories based on TTL (with dry-run option)
+- maint.rebuild — Rebuild catalog/index from items on disk
+- maint.replay — Replay journal; optional compaction
+- maint.compact — Compact journal
+- maint.compact.now — Trigger immediate compaction
+- maint.compactSnapshot — One-click compaction + snapshot
+- maint.snapshot — Write snapshot meta (lastTs + checksum)
+- maint.verify — Verify current checksum vs snapshot and state-ok markers
+- **maint.prune** — Remove expired memories based on TTL (with dry-run option)
 
 ### Journal Operations
-- **journal.stats** — Get journal statistics and optimization status
-- **journal.migrate** — Migrate legacy journal to optimized format
-- **journal.verify** — Verify integrity using optimized journal hashes
+- **jour.stats** — Get journal statistics and optimization status
+- **jour.migrate** — Migrate legacy journal to optimized format
+- **jour.verify** — Verify integrity using optimized journal hashes
 
 ### **Video Storage & Migration Tools**
-- **migration.status** — Check migration status and storage metrics
-- **migration.storage.backend** — Migrate between file and video storage backends
-- **migration.scope** — Migrate filtered memories between scopes (global/local/committed)
-- **migration.validate** — Validate migration integrity and consistency
+- **mig.status** — Check migration status and storage metrics
+- **mig.storage.backend** — Migrate between file and video storage backends
+- **mig.scope** — Migrate filtered memories between scopes (global/local/committed)
+- **mig.validate** — Validate migration integrity and consistency
 
 ### MCP Prompts
 - **check-memory** — Auto-discover relevant memories before starting tasks (inspired by Claude's memory tool)
@@ -533,7 +533,7 @@ Recommended usage for JS/TS projects:
 Create a snippet (local scope):
 ```json
 {
-  "name": "memory.upsert",
+  "name": "mem.upsert",
   "arguments": {
     "type": "snippet",
     "scope": "local",
@@ -550,7 +550,7 @@ Create a snippet (local scope):
 Query snippets/patterns for React:
 ```json
 {
-  "name": "memory.query",
+  "name": "mem.query",
   "arguments": {
     "q": "react",
     "scope": "project",
@@ -562,32 +562,32 @@ Query snippets/patterns for React:
 
 Pin an important pattern:
 ```json
-{ "name": "memory.pin", "arguments": { "id": "01H..." } }
+{ "name": "mem.pin", "arguments": { "id": "01H..." } }
 ```
 
 Link related items:
 ```json
-{ "name": "memory.link", "arguments": { "from": "01A...", "to": "01B...", "rel": "refines" } }
+{ "name": "mem.link", "arguments": { "from": "01A...", "to": "01B...", "rel": "refines" } }
 ```
 
 Record positive feedback for confidence scoring:
 ```json
-{ "name": "memory.feedback", "arguments": { "id": "01H...", "helpful": true, "scope": "local" } }
+{ "name": "mem.feedback", "arguments": { "id": "01H...", "helpful": true, "scope": "local" } }
 ```
 
 Record usage event for confidence scoring:
 ```json
-{ "name": "memory.use", "arguments": { "id": "01H...", "scope": "local" } }
+{ "name": "mem.use", "arguments": { "id": "01H...", "scope": "local" } }
 ```
 
 **Check storage backend and migration status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "mig.status", "arguments": { "scope": "local", "backend": "video" } }
 ```
 
 **Migrate from file to video storage:**
 ```json
-{ "name": "migration.storage.backend", "arguments": {
+{ "name": "mig.storage.backend", "arguments": {
   "sourceBackend": "file",
   "targetBackend": "video",
   "scope": "local",
@@ -597,12 +597,12 @@ Record usage event for confidence scoring:
 
 **Validate video storage integrity:**
 ```json
-{ "name": "migration.validate", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "mig.validate", "arguments": { "scope": "local", "backend": "video" } }
 ```
 
 Rebuild catalog and index for project scopes:
 ```json
-{ "name": "maintenance.rebuild", "arguments": { "scope": "project" } }
+{ "name": "maint.rebuild", "arguments": { "scope": "project" } }
 ```
 
 ## New Features (Inspired by Claude's Memory Tool)
@@ -631,7 +631,7 @@ Edit memories without full rewrites, inspired by Claude's `str_replace` and `ins
 
 **Fix a typo:**
 ```json
-{ "name": "memory.patch", "arguments": {
+{ "name": "mem.patch", "arguments": {
   "id": "01HX...",
   "operations": [
     { "field": "text", "old": "authetication", "new": "authentication" }
@@ -641,7 +641,7 @@ Edit memories without full rewrites, inspired by Claude's `str_replace` and `ins
 
 **Add new learnings:**
 ```json
-{ "name": "memory.append", "arguments": {
+{ "name": "mem.append", "arguments": {
   "id": "01HX...",
   "field": "text",
   "content": "Update: Also works with OAuth2 flows",
@@ -651,7 +651,7 @@ Edit memories without full rewrites, inspired by Claude's `str_replace` and `ins
 
 **Combine duplicate memories:**
 ```json
-{ "name": "memory.merge", "arguments": {
+{ "name": "mem.merge", "arguments": {
   "sourceIds": ["01HX...", "01HY...", "01HZ..."],
   "scope": "local",
   "strategy": "deduplicate",
@@ -673,7 +673,7 @@ Automatically manage memory lifecycle with time-to-live settings:
 
 **Create temporary memory:**
 ```json
-{ "name": "memory.upsert", "arguments": {
+{ "name": "mem.upsert", "arguments": {
   "type": "insight",
   "scope": "local",
   "text": "Debugging auth flow - using test token ABC123",
@@ -683,7 +683,7 @@ Automatically manage memory lifecycle with time-to-live settings:
 
 **Preview expired memories:**
 ```json
-{ "name": "maintenance.prune", "arguments": {
+{ "name": "maint.prune", "arguments": {
   "scope": "local",
   "dryRun": true
 }}
@@ -691,7 +691,7 @@ Automatically manage memory lifecycle with time-to-live settings:
 
 **Remove expired memories:**
 ```json
-{ "name": "maintenance.prune", "arguments": {
+{ "name": "maint.prune", "arguments": {
   "scope": "local",
   "dryRun": false
 }}
@@ -699,7 +699,7 @@ Automatically manage memory lifecycle with time-to-live settings:
 
 **Extend TTL for valuable memories:**
 ```json
-{ "name": "memory.renew", "arguments": {
+{ "name": "mem.renew", "arguments": {
   "id": "01HX...",
   "ttlDays": 90
 }}
@@ -715,7 +715,7 @@ Automatically manage memory lifecycle with time-to-live settings:
 
 ## Ranking and Tuning
 
-Search uses BM25 with configurable boosts. Tune per scope via `config.json` and `project.config.*`.
+Search uses BM25 with configurable boosts. Tune per scope via `config.json` and `proj.config.*`.
 
 Config (subset):
 ```ts
@@ -754,7 +754,7 @@ Recommended defaults (JS/TS):
 Set committed-scope tuning:
 ```json
 {
-  "name": "project.config.set",
+  "name": "proj.config.set",
   "arguments": {
     "scope": "committed",
     "config": {
@@ -773,7 +773,7 @@ Set committed-scope tuning:
 }
 ```
 
-After changing field weights, run `maintenance.rebuild` for the affected scope to re-apply indexing weights.
+After changing field weights, run `maint.rebuild` for the affected scope to re-apply indexing weights.
 
 ### Confidence Scoring Configuration
 
@@ -813,7 +813,7 @@ interface ConfidenceConfig {
 Example configuration:
 ```json
 {
-  "name": "project.config.set",
+  "name": "proj.config.set",
   "arguments": {
     "scope": "committed",
     "config": {
@@ -839,17 +839,17 @@ Enable hybrid search via config (per scope) and provide vectors for items and qu
 
 1) Enable hybrid and set weights:
 ```json
-{ "name": "project.config.set", "arguments": { "scope": "committed", "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" } } } } }
+{ "name": "proj.config.set", "arguments": { "scope": "committed", "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" } } } } }
 ```
 
 2) Set an item vector:
 ```json
-{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05, ...] } }
+{ "name": "vec.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05, ...] } }
 ```
 
 3) Query with a query embedding:
 ```json
-{ "name": "memory.query", "arguments": { "q": "authentication flow", "scope": "project", "k": 20, "vector": [/* query embedding */], "filters": { "type": ["snippet", "pattern"] } } }
+{ "name": "mem.query", "arguments": { "q": "authentication flow", "scope": "project", "k": 20, "vector": [/* query embedding */], "filters": { "type": ["snippet", "pattern"] } } }
 ```
 
 The server blends BM25 and cosine scores per configured weights, then applies boosts and phrase/title bonuses.
@@ -858,18 +858,18 @@ Bulk vector import (JSONL)
 - Prepare a JSONL file where each line is: {"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
 - Import with optional dimension override:
 ```json
-{ "name": "vectors.importJsonl", "arguments": { "scope": "local", "path": "/abs/path/vectors.jsonl", "dim": 768 } }
+{ "name": "vec.importJsonl", "arguments": { "scope": "local", "path": "/abs/path/vec.jsonl", "dim": 768 } }
 ```
 Or pass items inline:
 ```json
-{ "name": "vectors.importBulk", "arguments": { "scope": "local", "items": [{"id":"01A","vector":[0.1,0.2]},{"id":"01B","vector":[0.0,0.3]}] } }
+{ "name": "vec.importBulk", "arguments": { "scope": "local", "items": [{"id":"01A","vector":[0.1,0.2]},{"id":"01B","vector":[0.0,0.3]}] } }
 ```
 
 ## Context Packs
 
 Build an IDE-ready pack of code snippets, facts, configs, and patterns, tuned for JS/TS:
 
-- Tool: `memory.contextPack`
+- Tool: `mem.contextPack`
 - Resource: `kb://context/pack`
 - Useful args:
   - q, scope, k
@@ -881,7 +881,7 @@ Build an IDE-ready pack of code snippets, facts, configs, and patterns, tuned fo
 
 Example:
 ```json
-{ "name": "memory.contextPack", "arguments": { "q": "react hooks", "scope": "project", "k": 12, "tokenBudget": 2000, "snippetLanguages": ["typescript","tsx"], "snippetFilePatterns": ["src/**/*.ts","src/**/*.tsx"] } }
+{ "name": "mem.contextPack", "arguments": { "q": "react hooks", "scope": "project", "k": 12, "tokenBudget": 2000, "snippetLanguages": ["typescript","tsx"], "snippetFilePatterns": ["src/**/*.ts","src/**/*.tsx"] } }
 ```
 
 URI form:
@@ -893,23 +893,23 @@ Per-scope order/caps are configurable in config.json under `contextPack`.
 
 ## Maintenance & Compaction
 
-- Threshold-based compaction: set `maintenance.compactEvery` (default 500). Triggers compaction after N journal appends.
-- Time-based compaction: set `maintenance.compactIntervalMs` (default 24h).
+- Threshold-based compaction: set `maint.compactEvery` (default 500). Triggers compaction after N journal appends.
+- Time-based compaction: set `maint.compactIntervalMs` (default 24h).
 - Manual controls:
-  - `maintenance.replay` — replay journal; optional compact
-  - `maintenance.compact` — compact scope(s)
-  - `maintenance.compact.now` — immediate compaction
-  - `maintenance.compactSnapshot` — compaction + snapshot in one step
-  - `maintenance.snapshot` — write snapshot meta (for fast tail replay)
-  - `maintenance.verify` — recompute checksum and compare to snapshot/state-ok
+  - `maint.replay` — replay journal; optional compact
+  - `maint.compact` — compact scope(s)
+  - `maint.compact.now` — immediate compaction
+  - `maint.compactSnapshot` — compaction + snapshot in one step
+  - `maint.snapshot` — write snapshot meta (for fast tail replay)
+  - `maint.verify` — recompute checksum and compare to snapshot/state-ok
 
 State-ok markers
 - After successful compaction and startup tail replay, the server writes `index/state-ok.json` containing the last verified checksum and timestamp.
-- `maintenance.verify` reports whether current checksum matches both snapshot and state-ok markers.
+- `maint.verify` reports whether current checksum matches both snapshot and state-ok markers.
 
 ## Secret Redaction
 
-On upsert, common credential patterns are redacted from `text`/`code` and hashed into `security.secretHashRefs` to prevent leakage into committed memory.
+On upsert, common credential patterns are redacted from `text`/`code` and hashed into `security.secretHashRefs` to prevent leakage into committed mem.
 
 ## Development
 
@@ -934,12 +934,12 @@ pnpm run simulate:user    # simulated JS/TS flow
 
 - Vector store dimension issues
   - Bulk imports enforce a single embedding dimension. If you previously stored a different dimension, either:
-    - Pass a `dim` override to `vectors.importBulk` / `vectors.importJsonl`, or
+    - Pass a `dim` override to `vec.importBulk` / `vec.importJsonl`, or
     - Clean the local vector files and re-import:
-      - `rm -f .llm-memory/index/vectors.json .llm-memory/index/vectors.meta.json`
+      - `rm -f .llm-memory/index/vec.json .llm-memory/index/vec.meta.json`
 
 - Snapshot/verify workflow
-  - For fast restarts, run once: `maintenance.compactSnapshot` (project/all), then `maintenance.verify` should report ok=true.
+  - For fast restarts, run once: `maint.compactSnapshot` (project/all), then `maint.verify` should report ok=true.
   - Verify compares the current checksum against both snapshot and the last `state-ok` marker.
 
 - Zsh glob “no matches found”
@@ -950,11 +950,11 @@ pnpm run simulate:user    # simulated JS/TS flow
 
 
 Manual test:
-- `node test-memory-tools.js` — exercises memory.* tools via stdio
+- `node test-memory-tools.js` — exercises mem.* tools via stdio
 
 ## Notes
 
-- The previous kb.* tools were replaced by memory.* tools.
+- The previous kb.* tools were replaced by mem.* tools.
 - Offline-first; no external services required.
 - For teams, prefer committed scope and stricter committed config.
 
@@ -962,7 +962,7 @@ Manual test:
 
 - Save a reusable TypeScript pattern to committed scope
 ```json
-{ "name": "memory.upsert", "arguments": {
+{ "name": "mem.upsert", "arguments": {
   "type": "pattern",
   "scope": "committed",
   "title": "React Error Boundary",
@@ -977,7 +977,7 @@ Manual test:
 
 - Search by tag across project (local + committed)
 ```json
-{ "name": "memory.query", "arguments": {
+{ "name": "mem.query", "arguments": {
   "scope": "project",
   "k": 20,
   "filters": { "tags": ["react"] }
@@ -986,7 +986,7 @@ Manual test:
 
 - Build a context pack focused on src/utils and TS/TSX
 ```json
-{ "name": "memory.contextPack", "arguments": {
+{ "name": "mem.contextPack", "arguments": {
   "q": "debounce util",
   "scope": "project",
   "k": 12,
@@ -998,20 +998,20 @@ Manual test:
 
 - Pin a frequently used runbook
 ```json
-{ "name": "memory.pin", "arguments": { "id": "01H..." } }
+{ "name": "mem.pin", "arguments": { "id": "01H..." } }
 ```
 
 - Merge local → committed (team share) and check status
 ```json
-{ "name": "project.sync.status", "arguments": {} }
+{ "name": "proj.sync.status", "arguments": {} }
 ```
 ```json
-{ "name": "project.sync.merge", "arguments": {} }
+{ "name": "proj.sync.merge", "arguments": {} }
 ```
 
 - Guard committed scope by sensitivity (team only)
 ```json
-{ "name": "project.config.set", "arguments": {
+{ "name": "proj.config.set", "arguments": {
   "scope": "committed",
   "config": { "version": "1", "sharing": { "enabled": true, "sensitivity": "team" } }
 } }
@@ -1019,31 +1019,31 @@ Manual test:
 
 - Enable hybrid search and set vectors (example)
 ```json
-{ "name": "project.config.set", "arguments": {
+{ "name": "proj.config.set", "arguments": {
   "scope": "local",
   "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3 } } }
 } }
 ```
 ```json
-{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05] } }
+{ "name": "vec.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05] } }
 ```
 ```json
-{ "name": "memory.query", "arguments": { "q": "auth flow", "scope": "project", "k": 20, "vector": [0.08, -0.15, 0.02] } }
+{ "name": "mem.query", "arguments": { "q": "auth flow", "scope": "project", "k": 20, "vector": [0.08, -0.15, 0.02] } }
 ```
 
 - Compact journals when needed
 ```json
-{ "name": "maintenance.compact.now", "arguments": { "scope": "project" } }
+{ "name": "maint.compact.now", "arguments": { "scope": "project" } }
 ```
 
 - One-click compact + snapshot
 ```json
-{ "name": "maintenance.compactSnapshot", "arguments": { "scope": "all" } }
+{ "name": "maint.compactSnapshot", "arguments": { "scope": "all" } }
 ```
 
 - Verify on-disk state vs snapshot/state-ok
 ```json
-{ "name": "maintenance.verify", "arguments": { "scope": "project" } }
+{ "name": "maint.verify", "arguments": { "scope": "project" } }
 ```
 
 ## Journal Optimization
@@ -1052,17 +1052,17 @@ The system automatically uses an optimized journal format that reduces storage b
 
 - Check journal optimization status
 ```json
-{ "name": "journal.stats", "arguments": { "scope": "all" } }
+{ "name": "jour.stats", "arguments": { "scope": "all" } }
 ```
 
 - Manually migrate legacy journals (automatic on startup)
 ```json
-{ "name": "journal.migrate", "arguments": { "scope": "project" } }
+{ "name": "jour.migrate", "arguments": { "scope": "project" } }
 ```
 
 - Verify journal integrity using hashes
 ```json
-{ "name": "journal.verify", "arguments": { "scope": "local" } }
+{ "name": "jour.verify", "arguments": { "scope": "local" } }
 ```
 
 ## Confidence Scoring Workflow
@@ -1077,7 +1077,7 @@ The confidence scoring system automatically learns from your usage patterns and 
 Example workflow:
 ```json
 // Create a useful code snippet
-{ "name": "memory.upsert", "arguments": {
+{ "name": "mem.upsert", "arguments": {
   "type": "snippet",
   "scope": "local",
   "title": "React useDebounce Hook",
@@ -1087,11 +1087,11 @@ Example workflow:
 }}
 
 // Record usage when you actually use it
-{ "name": "memory.use", "arguments": { "id": "01ABC...", "scope": "local" } }
+{ "name": "mem.use", "arguments": { "id": "01ABC...", "scope": "local" } }
 
 // Provide feedback when it proves helpful
-{ "name": "memory.feedback", "arguments": { "id": "01ABC...", "helpful": true, "scope": "local" } }
+{ "name": "mem.feedback", "arguments": { "id": "01ABC...", "helpful": true, "scope": "local" } }
 
 // Search will now rank this item higher in future queries
-{ "name": "memory.query", "arguments": { "q": "react debounce", "scope": "project", "k": 10 } }
+{ "name": "mem.query", "arguments": { "q": "react debounce", "scope": "project", "k": 10 } }
 ```
