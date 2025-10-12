@@ -320,17 +320,17 @@ interface MemoryItem {
 - Example: Before implementing auth, Claude checks for existing JWT patterns
 
 **Incremental Editing Operations**
-- `memory.patch`: Apply surgical text replacements (like str_replace)
+- `mem.patch`: Apply surgical text replacements (like str_replace)
   - Multiple operations per call
   - Replaces specific text in title, text, or code fields
   - Skips operations if old text not found (logs warning)
 
-- `memory.append`: Add content without rewriting (like insert)
+- `mem.append`: Add content without rewriting (like insert)
   - Append to text or code fields
   - Configurable separator (default: "\n\n")
   - Preserves existing content
 
-- `memory.merge`: Combine multiple memories intelligently
+- `mem.merge`: Combine multiple memories intelligently
   - Strategies: concat, deduplicate, prioritize-first, prioritize-recent
   - Auto-deduplicates tags, files, symbols
   - Optional source deletion after merge
@@ -342,13 +342,13 @@ interface MemoryItem {
   - Works identically for file and video backends
 
 **TTL-Based Auto-Pruning**
-- `maintenance.prune`: Remove expired memories automatically
+- `maint.prune`: Remove expired memories automatically
   - Checks expiresAt timestamp
   - Dry-run preview mode
   - Works across all scopes
   - Reports expired/kept counts per scope
 
-- `memory.renew`: Extend TTL for valuable memories
+- `mem.renew`: Extend TTL for valuable memories
   - Extends expiration date for active items
   - Can set new TTL or reuse original
   - Auto-calculates new expiresAt timestamp
@@ -375,7 +375,7 @@ Automatic backend selection priority:
 2. Detect FFmpeg capabilities (native > WASM)
 3. Fall back to file storage
 
-Manual override via `project.config.set` tool with `storage.backend: 'video'` or `'file'`.
+Manual override via `proj.config.set` tool with `storage.backend: 'video'` or `'file'`.
 
 ### Migration Process
 
@@ -417,12 +417,12 @@ Time decay applied exponentially with configurable half-lives.
 - 81-95% storage reduction
 - Backward compatible with legacy journals
 - Automatic migration on startup
-- Integrity verification via `journal.verify` tool
+- Integrity verification via `jour.verify` tool
 
 **Journal Operations**:
-- `journal.stats`: Get optimization status and size reduction
-- `journal.migrate`: Convert legacy → optimized format
-- `journal.verify`: Validate integrity using hashes
+- `jour.stats`: Get optimization status and size reduction
+- `jour.migrate`: Convert legacy → optimized format
+- `jour.verify`: Validate integrity using hashes
 
 ### Search Query Flow
 
@@ -635,8 +635,8 @@ pnpm run test:performance   # Benchmark both backends
 - Install native FFmpeg for optimal performance (200-600 fps vs 10-40 fps WASM)
 - Use H.265 for 30% better compression vs H.264 (at cost of encoding speed)
 - Configure error correction based on content importance (L=7%, M=15%, Q=25%, H=30%)
-- Monitor cache hit rates via `migration.status` tool
-- Run `migration.validate` after backend switches
+- Monitor cache hit rates via `mig.status` tool
+- Run `mig.validate` after backend switches
 - Keep QR decode success rate >99% (check logs)
 
 ### Secret Redaction
@@ -775,14 +775,14 @@ LLM_MEMORY_STARTUP_REPLAY_MS=5000 pnpm start
 LLM_MEMORY_HOME_DIR="$(pwd)/test-data" pnpm start
 
 # Validate video storage
-echo '{"name":"migration.validate","arguments":{"scope":"local","backend":"video"}}' | node dist/src/index.js
+echo '{"name":"mig.validate","arguments":{"scope":"local","backend":"video"}}' | node dist/src/index.js
 
 # Check FFmpeg installation
 ffmpeg -version
 which ffmpeg
 
 # Get storage statistics
-echo '{"name":"migration.status","arguments":{"scope":"local","backend":"video"}}' | node dist/src/index.js
+echo '{"name":"mig.status","arguments":{"scope":"local","backend":"video"}}' | node dist/src/index.js
 ```
 
 ### Known Issues and Fixes
