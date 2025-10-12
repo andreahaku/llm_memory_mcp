@@ -9,6 +9,7 @@ export interface ToolGroupConfig {
   migration: boolean;      // Storage backend migration tools
   journal: boolean;        // Journal management and optimization
   maintenance: boolean;    // Advanced maintenance operations
+  autolearn: boolean;      // Auto-learning from git commits
 }
 
 // Default configuration - only core tools enabled
@@ -18,6 +19,7 @@ export const DEFAULT_TOOL_CONFIG: ToolGroupConfig = {
   migration: false,
   journal: false,
   maintenance: false,
+  autolearn: false,
 };
 
 // Environment variable overrides
@@ -36,6 +38,7 @@ export function getToolConfig(): ToolGroupConfig {
         migration: true,
         journal: true,
         maintenance: true,
+        autolearn: true,
       };
     }
 
@@ -43,6 +46,7 @@ export function getToolConfig(): ToolGroupConfig {
     if (enabled.includes('migration')) config.migration = true;
     if (enabled.includes('journal')) config.journal = true;
     if (enabled.includes('maintenance')) config.maintenance = true;
+    if (enabled.includes('autolearn')) config.autolearn = true;
   }
 
   return config;
