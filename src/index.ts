@@ -15,6 +15,7 @@ import {
 
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import { AutoLearnManager } from './autolearn/AutoLearnManager.js';
 import { getToolConfig } from './toolConfig.js';
 import { getEnabledTools } from './toolDefinitions.js';
 
