@@ -15,6 +15,7 @@ import {
 
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import { AutoLearnManager } from './autolearn/AutoLearnManager.js';
 import { getToolConfig } from './toolConfig.js';
 import { getEnabledTools } from './toolDefinitions.js';
 
@@ -1068,7 +1069,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(validation, null, 2) }] };
           }
 
-          case 'autolearn.status': {
+          case 'auto.status': {
             log('Getting auto-learning status');
 
             if (!this.autoLearn) {
@@ -1080,7 +1081,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
           }
 
-          case 'autolearn.init': {
+          case 'auto.init': {
             const projectInfo = this.memory.getProjectInfo();
             if (!projectInfo) {
               throw new McpError(ErrorCode.InvalidRequest, 'No project detected');
@@ -1092,16 +1093,16 @@ class LLMKnowledgeBaseServer {
               this.autoLearn = new AutoLearnManager(this.memory);
             }
 
-            const autoInstall = (args.autoInstall as boolean | undefined) ?? true;
+            const autoInstall = (args.autoInst as boolean | undefined) ?? true;
             const result = await this.autoLearn.initialize(projectInfo.root, autoInstall);
 
             log(`Auto-learning initialized: git hooks=${result.gitHooksInstalled}, agents=${result.agentsInstalled}`);
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
-          case 'autolearn.processQueue': {
+          case 'auto.processQ': {
             if (!this.autoLearn) {
-              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call auto.init first.');
             }
 
             log('Processing auto-learning queue');
@@ -1111,12 +1112,12 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify({ processed: results.length, results }, null, 2) }] };
           }
 
-          case 'autolearn.captureCommit': {
+          case 'auto.capture': {
             if (!this.autoLearn) {
-              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call auto.init first.');
             }
 
-            const commitHash = (args.commitHash as string) || 'HEAD';
+            const commitHash = (args.hash as string) || 'HEAD';
             log(`Capturing commit: ${commitHash}`);
 
             const result = await this.autoLearn.captureCommit(commitHash);
@@ -1129,7 +1130,7 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
-          case 'autolearn.installGlobally': {
+          case 'auto.installGlobal': {
             if (!this.autoLearn) {
               this.autoLearn = new AutoLearnManager(this.memory);
             }

@@ -355,6 +355,35 @@ export const MAINTENANCE_TOOLS: Tool[] = [
   },
 ];
 
+// Auto-learning tools (optional)
+export const AUTOLEARN_TOOLS: Tool[] = [
+  {
+    name: 'auto.status',
+    description: 'Get auto-learning status',
+    inputSchema: obj({}),
+  },
+  {
+    name: 'auto.init',
+    description: 'Initialize auto-learning',
+    inputSchema: obj({ autoInst: bool() }),
+  },
+  {
+    name: 'auto.processQ',
+    description: 'Process learning queue',
+    inputSchema: obj({}),
+  },
+  {
+    name: 'auto.capture',
+    description: 'Capture specific commit',
+    inputSchema: obj({ hash: str() }),
+  },
+  {
+    name: 'auto.installGlobal',
+    description: 'Install hooks globally',
+    inputSchema: obj({}),
+  },
+];
+
 // Build tool list based on configuration
 export function getEnabledTools(config: ToolGroupConfig): Tool[] {
   const tools: Tool[] = [...CORE_TOOLS];
@@ -363,6 +392,7 @@ export function getEnabledTools(config: ToolGroupConfig): Tool[] {
   if (config.migration) tools.push(...MIGRATION_TOOLS);
   if (config.journal) tools.push(...JOURNAL_TOOLS);
   if (config.maintenance) tools.push(...MAINTENANCE_TOOLS);
+  if (config.autolearn) tools.push(...AUTOLEARN_TOOLS);
 
   return tools;
 }
