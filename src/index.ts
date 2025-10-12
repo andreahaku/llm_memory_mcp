@@ -15,6 +15,7 @@ import {
 
 import { MemoryManager } from './MemoryManager.js';
 import type { MemoryScope, MemoryQuery, MemoryType } from './types/Memory.js';
+import { AutoLearnManager } from './autolearn/AutoLearnManager.js';
 
 // Import MigrationManager conditionally to avoid FFmpeg dependency issues
 let MigrationManagerClass: any = null;
@@ -39,6 +40,7 @@ class LLMKnowledgeBaseServer {
   private server: Server;
   private memory: MemoryManager;
   private migration: any;
+  private autoLearn: AutoLearnManager | null = null;
   private isShuttingDown = false;
 
   constructor() {
@@ -69,6 +71,24 @@ class LLMKnowledgeBaseServer {
       log('🔗 MCP client connecting...');
       const result = await originalConnect(transport);
       log('✅ MCP client connected successfully');
+
+      // Auto-initialize auto-learning if project detected
+      const projectInfo = this.memory.getProjectInfo();
+      if (projectInfo && !this.autoLearn) {
+        try {
+          log('🎓 Auto-initializing learning system...');
+          this.autoLearn = new AutoLearnManager(this.memory);
+          const initResult = await this.autoLearn.initialize(projectInfo.root, true);
+          if (initResult.success) {
+            log(`✅ Auto-learning initialized: git hooks=${initResult.gitHooksInstalled}, agents=${initResult.agentsInstalled}`);
+          } else {
+            log(`⚠️  Auto-learning initialization incomplete: ${initResult.errors.join(', ')}`);
+          }
+        } catch (error) {
+          log(`⚠️  Auto-learning initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
       return result;
     };
 
@@ -333,6 +353,56 @@ class LLMKnowledgeBaseServer {
           },
         },
         {
+          name: 'embeddings.text',
+          description: 'Generate embedding vector for raw text using local transformers.js model',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'Text to embed' },
+              model: { type: 'string', description: 'Optional model key (default: all-MiniLM-L6-v2)', enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5'] }
+            },
+            required: ['text'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.memory',
+          description: 'Generate and store embedding for a specific memory item by ID',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Memory item ID to embed' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' }
+            },
+            required: ['id'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.memories',
+          description: 'Batch generate and store embeddings for multiple memory items',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              ids: { type: 'array', items: { type: 'string' }, description: 'Array of memory item IDs to embed' },
+              scope: { type: 'string', enum: ['global','local','committed'], description: 'Optional scope to search in' }
+            },
+            required: ['ids'],
+            additionalProperties: false
+          },
+        },
+        {
+          name: 'embeddings.modelInfo',
+          description: 'Get information about available embedding models',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              model: { type: 'string', description: 'Optional model key to get info for', enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2', 'bge-small-en-v1.5'] }
+            },
+            additionalProperties: false
+          },
+        },
+        {
           name: 'memory.get',
           description: 'Fetch a memory item by id',
           inputSchema: {
@@ -589,12 +659,12 @@ class LLMKnowledgeBaseServer {
         },
         {
           name: 'migration.storage_backend',
-          description: 'Migrate storage between file and video backends within same scope',
+          description: 'Migrate storage between file, video, and markdown backends within same scope',
           inputSchema: {
             type: 'object',
             properties: {
-              sourceBackend: { type: 'string', enum: ['file', 'video'] },
-              targetBackend: { type: 'string', enum: ['file', 'video'] },
+              sourceBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
+              targetBackend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
@@ -633,7 +703,7 @@ class LLMKnowledgeBaseServer {
                 },
                 additionalProperties: false
               },
-              storageBackend: { type: 'string', enum: ['file', 'video'], description: 'Storage backend to use' },
+              storageBackend: { type: 'string', enum: ['file', 'video', 'markdown'], description: 'Storage backend to use' },
               dryRun: { type: 'boolean', description: 'Preview migration without executing' },
               validateAfterMigration: { type: 'boolean', description: 'Validate migration integrity' },
             },
@@ -648,7 +718,7 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
             },
             required: ['scope', 'backend'],
             additionalProperties: false,
@@ -661,10 +731,59 @@ class LLMKnowledgeBaseServer {
             type: 'object',
             properties: {
               scope: { type: 'string', enum: ['global', 'local', 'committed'] },
-              backend: { type: 'string', enum: ['file', 'video'] },
+              backend: { type: 'string', enum: ['file', 'video', 'markdown'] },
               expectedItems: { type: 'array', items: { type: 'string' }, description: 'Expected item IDs for validation' },
             },
             required: ['scope', 'backend'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.status',
+          description: 'Get auto-learning system status and hook installation state',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.init',
+          description: 'Initialize auto-learning system for current project',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              autoInstall: { type: 'boolean', description: 'Auto-install hooks if missing (default: true)' },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.processQueue',
+          description: 'Process queued auto-learning events from git commits',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.captureCommit',
+          description: 'Manually capture a git commit for auto-learning',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              commitHash: { type: 'string', description: 'Commit hash (default: HEAD)' },
+            },
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'autolearn.installGlobally',
+          description: 'Install auto-learning hooks and agents globally',
+          inputSchema: {
+            type: 'object',
+            properties: {},
             additionalProperties: false,
           },
         },
@@ -989,6 +1108,61 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
           }
 
+          case 'embeddings.text': {
+            const text = args.text as string;
+            const model = args.model as string | undefined;
+
+            log(`Generating embedding: text length=${text.length}${model ? `, model=${model}` : ''}`);
+
+            const embedding = await this.memory.embedText(text, model);
+
+            log(`Embedding generated: dimension=${embedding.length}`);
+            return { content: [{ type: 'text', text: JSON.stringify({ embedding, dimension: embedding.length }, null, 2) }] };
+          }
+
+          case 'embeddings.memory': {
+            const id = args.id as string;
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Embedding memory: id=${id}${scope ? `, scope=${scope}` : ''}`);
+
+            const result = await this.memory.embedMemory(id, scope);
+
+            if (!result.success) {
+              log(`Failed to embed memory: id=${id}, error=${result.error}`);
+              throw new McpError(ErrorCode.InternalError, result.error || 'Failed to embed memory');
+            }
+
+            log(`Memory embedded successfully: id=${id}, dimension=${result.dimension}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'embeddings.memories': {
+            const ids = args.ids as string[];
+            const scope = args.scope as MemoryScope | undefined;
+
+            log(`Batch embedding memories: count=${ids.length}${scope ? `, scope=${scope}` : ''}`);
+
+            const results = await this.memory.embedMemories(ids, scope);
+
+            const successCount = results.filter(r => r.success).length;
+            const failCount = results.length - successCount;
+
+            log(`Batch embedding completed: ${successCount} succeeded, ${failCount} failed`);
+            return { content: [{ type: 'text', text: JSON.stringify({ total: results.length, succeeded: successCount, failed: failCount, results }, null, 2) }] };
+          }
+
+          case 'embeddings.modelInfo': {
+            const model = args.model as string | undefined;
+
+            log(`Getting model info${model ? `: model=${model}` : ''}`);
+
+            const info = this.memory.getEmbeddingModelInfo(model);
+
+            log(`Model info retrieved: ${info.name}, dimension=${info.dimension}`);
+            return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] };
+          }
+
           case 'memory.contextPack': {
             const pack = await this.memory.contextPack(args as any);
             return { content: [{ type: 'text', text: JSON.stringify(pack, null, 2) }] };
@@ -1028,7 +1202,7 @@ class LLMKnowledgeBaseServer {
             // If setting storage backend, also update the default backend preference
             if (config?.storage?.backend) {
               const backend = config.storage.backend;
-              if (backend === 'video' || backend === 'file') {
+              if (backend === 'video' || backend === 'file' || backend === 'markdown') {
                 log(`Setting default backend preference to: ${backend}`);
                 this.memory.setDefaultBackend(backend);
               }
@@ -1341,8 +1515,8 @@ class LLMKnowledgeBaseServer {
                 'Migration tools are unavailable in this environment (FFmpeg not installed or failed to load)'
               );
             }
-            const sourceBackend = args.sourceBackend as 'file' | 'video';
-            const targetBackend = args.targetBackend as 'file' | 'video';
+            const sourceBackend = args.sourceBackend as 'file' | 'video' | 'markdown';
+            const targetBackend = args.targetBackend as 'file' | 'video' | 'markdown';
             const scope = args.scope as MemoryScope;
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
@@ -1398,7 +1572,7 @@ class LLMKnowledgeBaseServer {
             const sourceScope = args.sourceScope as MemoryScope;
             const targetScope = args.targetScope as MemoryScope;
             const contentFilter = args.contentFilter as any;
-            const storageBackend = (args.storageBackend as 'file' | 'video') || 'file';
+            const storageBackend = (args.storageBackend as 'file' | 'video' | 'markdown') || 'file';
             const dryRun = args.dryRun as boolean || false;
             const validateAfterMigration = args.validateAfterMigration as boolean ?? true;
 
@@ -1457,7 +1631,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
 
             log(`Getting migration status: scope=${scope}, backend=${backend}`);
 
@@ -1476,7 +1650,7 @@ class LLMKnowledgeBaseServer {
               );
             }
             const scope = args.scope as MemoryScope;
-            const backend = args.backend as 'file' | 'video';
+            const backend = args.backend as 'file' | 'video' | 'markdown';
             const expectedItems = args.expectedItems as string[] || [];
 
             log(`Validating migration: scope=${scope}, backend=${backend}${expectedItems.length > 0 ? `, checking ${expectedItems.length} items` : ''}`);
@@ -1508,6 +1682,79 @@ class LLMKnowledgeBaseServer {
 
             log(`Migration validation: ${validation.success ? 'PASSED' : 'FAILED'} - ${validation.issues.length} issues`);
             return { content: [{ type: 'text', text: JSON.stringify(validation, null, 2) }] };
+          }
+
+          case 'autolearn.status': {
+            log('Getting auto-learning status');
+
+            if (!this.autoLearn) {
+              return { content: [{ type: 'text', text: JSON.stringify({ initialized: false }, null, 2) }] };
+            }
+
+            const status = await this.autoLearn.getStatus();
+            log(`Auto-learning status: ${status.initialized ? 'initialized' : 'not initialized'}`);
+            return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+          }
+
+          case 'autolearn.init': {
+            const projectInfo = this.memory.getProjectInfo();
+            if (!projectInfo) {
+              throw new McpError(ErrorCode.InvalidRequest, 'No project detected');
+            }
+
+            log(`Initializing auto-learning for project: ${projectInfo.repoId}`);
+
+            if (!this.autoLearn) {
+              this.autoLearn = new AutoLearnManager(this.memory);
+            }
+
+            const autoInstall = (args.autoInstall as boolean | undefined) ?? true;
+            const result = await this.autoLearn.initialize(projectInfo.root, autoInstall);
+
+            log(`Auto-learning initialized: git hooks=${result.gitHooksInstalled}, agents=${result.agentsInstalled}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'autolearn.processQueue': {
+            if (!this.autoLearn) {
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+            }
+
+            log('Processing auto-learning queue');
+            const results = await this.autoLearn.processQueue();
+
+            log(`Processed ${results.length} auto-learning events`);
+            return { content: [{ type: 'text', text: JSON.stringify({ processed: results.length, results }, null, 2) }] };
+          }
+
+          case 'autolearn.captureCommit': {
+            if (!this.autoLearn) {
+              throw new McpError(ErrorCode.InvalidRequest, 'Auto-learning not initialized. Call autolearn.init first.');
+            }
+
+            const commitHash = (args.commitHash as string) || 'HEAD';
+            log(`Capturing commit: ${commitHash}`);
+
+            const result = await this.autoLearn.captureCommit(commitHash);
+
+            if (result.success) {
+              log(`Commit captured successfully: ${commitHash}`);
+            } else {
+              log(`Failed to capture commit: ${result.error}`);
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
+          case 'autolearn.installGlobally': {
+            if (!this.autoLearn) {
+              this.autoLearn = new AutoLearnManager(this.memory);
+            }
+
+            log('Installing auto-learning hooks and agents globally');
+            const result = await this.autoLearn.installGlobally();
+
+            log(`Global installation: hooks=${result.hooksInstalled}, agents=${result.agentsInstalled}`);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
           default:

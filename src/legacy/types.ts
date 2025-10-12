@@ -1,3 +1,16 @@
+/**
+ * @deprecated Legacy types maintained for backward compatibility only.
+ * Use types from '../types/Memory.ts' instead:
+ * - Note → MemoryItem
+ * - NoteType → MemoryType
+ * - Scope → MemoryScope
+ * - SearchQuery → MemoryQuery
+ * - SearchResult → MemorySearchResult
+ * - ProjectInfo → ProjectInfo (same name, see Memory.ts)
+ *
+ * All new code should use the modern Memory types.
+ */
+
 export type NoteType = 'note' | 'snippet' | 'pattern' | 'config' | 'fact' | 'insight';
 
 export type Scope = 'global' | 'project';

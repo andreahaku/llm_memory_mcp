@@ -220,11 +220,36 @@ pnpm run benchmark
 - Phrase detection and exact match bonuses
 - Automatic index rebuilding on schema changes
 
-**Vector Index** (`src/storage/VectorIndex.ts`)
+**Vector Index** (`src/storage/VectorIndex.ts` and `src/storage/HNSWVectorIndex.ts`)
+- Two implementations: Linear (simple) and HNSW (high-performance)
+- **Linear Index**: O(n) search complexity, suitable for <1000 vectors
+- **HNSW Index** (default): O(log n) search complexity using Hierarchical Navigable Small World graphs
 - Cosine similarity search for semantic matching
 - Dimension consistency enforcement
 - Bulk import from JSONL
 - Hybrid search: weighted blend of BM25 + vector scores
+- ID mapping for hnswlib-node compatibility (string IDs → numeric labels)
+- Configurable HNSW parameters: M (connectivity), efConstruction (build quality), efSearch (search quality)
+
+**Local Embedding Generation** (`src/embeddings/LocalEmbedder.ts`)
+- Offline embedding generation using transformers.js (no external API calls)
+- Three pre-trained models available:
+  - `bge-small-en-v1.5`: Code-optimized, 384D, longer context (512 tokens) - **DEFAULT**
+  - `all-MiniLM-L6-v2`: Fast, 384D, general text
+  - `all-mpnet-base-v2`: Higher quality, 768D, semantic similarity
+- Automatic model download and caching (`.cache/transformers`)
+- Instance management per model with proper cleanup on dispose
+- Text truncation based on model's max token limit
+- True parallel batch embedding using Promise.all
+- Normalized vectors (unit norm) for cosine similarity
+- Async singleton pattern with proper model unloading to prevent memory leaks
+
+**Embedding Storage**:
+- Vectors stored per-scope in `index/vectors.hnsw` (binary HNSW index)
+- Metadata in `index/vectors.meta.json` (dimension, count, parameters)
+- ID mapping in `index/vectors.mapping.json` (memory IDs ↔ numeric labels)
+- Auto-embedding on memory upsert when enabled via config
+- Manual embedding via `embeddings.memory` and `embeddings.memories` tools
 
 **Confidence Scoring**:
 - Bayesian feedback integration (helpful/not helpful votes)
@@ -513,6 +538,18 @@ interface MemoryConfig {
       maxMs?: number;   // default: 5000
     };
   };
+  embeddings?: {
+    enabled?: boolean;        // Enable auto-embedding on memory upsert (default: false)
+    model?: string;           // Model key: 'bge-small-en-v1.5' (default), 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'
+    indexType?: 'linear' | 'hnsw'; // Vector index type (default: 'hnsw')
+    autoGenerate?: boolean;   // Generate embeddings for text+code on upsert (default: true when enabled)
+    hnsw?: {
+      maxElements?: number;   // Max capacity (default: 10000, auto-resizes by doubling)
+      M?: number;             // HNSW connectivity parameter (default: 16, higher = better recall, more memory)
+      efConstruction?: number; // Build quality (default: 200, higher = better index, slower build)
+      efSearch?: number;      // Search quality (default: 50, higher = better recall, slower search)
+    };
+  };
 }
 ```
 
@@ -653,6 +690,72 @@ this.memory.recordAccess(item, 'use', new Date());
 4. Update `docs/CLAUDE.md` configuration section
 5. Test with various queries and compare results
 
+### Using Local Embeddings and Hybrid Search
+**Enable Auto-Embedding**:
+```typescript
+// Via project.config.set MCP tool
+{
+  embeddings: {
+    enabled: true,
+    model: 'bge-small-en-v1.5', // default - optimized for code (or 'all-MiniLM-L6-v2', 'all-mpnet-base-v2')
+    indexType: 'hnsw',          // default, use 'linear' for <1000 vectors
+    autoGenerate: true          // auto-embed on memory upsert
+  }
+}
+```
+
+**Manual Embedding**:
+```typescript
+// Embed a single memory
+await manager.embedMemory(memoryId, scope);
+
+// Batch embed multiple memories
+await manager.embedMemories([id1, id2, id3], scope);
+
+// Generate embedding for raw text
+const vector = await manager.embedText(text, modelKey);
+
+// Get model information
+const info = manager.getEmbeddingModelInfo(modelKey);
+```
+
+**MCP Tools**:
+- `embeddings.text`: Generate embedding for raw text
+- `embeddings.memory`: Embed a memory item by ID
+- `embeddings.memories`: Batch embed multiple memories
+- `embeddings.modelInfo`: Get model information
+
+**Hybrid Search Configuration**:
+```typescript
+{
+  ranking: {
+    hybrid: {
+      enabled: true,
+      wBM25: 0.7,    // weight for keyword search
+      wVec: 0.3,     // weight for semantic search
+      model: 'bge-small-en-v1.5'  // default - optimized for code
+    }
+  }
+}
+```
+
+**Performance Tuning**:
+- Use HNSW index for >1000 vectors (default)
+- Increase `efSearch` for better recall (slower search)
+- Increase `M` for better connectivity (more memory)
+- Use `bge-small-en-v1.5` for code (384D, longer context) - **RECOMMENDED DEFAULT**
+- Use `all-MiniLM-L6-v2` for general text and speed (384D)
+- Use `all-mpnet-base-v2` for highest quality (768D, slower)
+
+**Testing Embeddings**:
+```bash
+# Run embedding functionality tests
+node test-embeddings.js
+
+# Check embedding storage
+ls -lh ~/.llm-memory/projects/*/index/vectors.*
+```
+
 ### Debugging Video Storage Issues
 ```bash
 # Enable debug logging
@@ -683,6 +786,41 @@ echo '{"name":"migration.status","arguments":{"scope":"local","backend":"video"}
 ```
 
 ### Known Issues and Fixes
+
+#### Phase 3 Critical Fixes (FIXED in commit 4ce6b96)
+**Date**: 2025-10-11
+**PR**: #9 - Phase 3: Hybrid Search Enhancements
+
+**Critical Issues Addressed**:
+1. **HNSW Persistence Directory Bug** - `src/storage/HNSWVectorIndex.ts:126-129`
+   - Fixed ENOENT errors during index persistence
+   - Now uses `path.dirname()` to create parent directories correctly
+   - Prevents data loss from failed write operations
+
+2. **Memory Leak in MemoryManager** - `src/MemoryManager.ts:1865-1873`
+   - Added embedder cleanup to `dispose()` method
+   - Each model (25-90MB) now properly unloaded on shutdown
+   - Prevents memory accumulation across server restarts
+
+3. **Singleton Model Switching Leak** - `src/embeddings/LocalEmbedder.ts:188-199`
+   - Changed `getDefaultEmbedder()` from sync to async
+   - Old models now properly unloaded before switching
+   - Prevents memory leaks when changing embedding models
+
+4. **Dimension Mismatch Detection** - `src/MemoryManager.ts:456-466`
+   - Added validation when loading vector indexes
+   - Warns when index dimension doesn't match configured model
+   - Provides actionable recovery instructions in warning
+
+5. **True Parallel Batch Embedding** - `src/embeddings/LocalEmbedder.ts:135-137`
+   - Replaced sequential loop with `Promise.all()`
+   - Enables parallel processing of embeddings
+   - Significantly improves batch operation performance
+
+6. **Enhanced Error Handling** - `src/storage/HNSWVectorIndex.ts:77-100`
+   - Added index count validation after loading
+   - Detects corruption via count mismatches
+   - Resets to clean state on load failures
 
 #### Frame Extraction Off-By-One Bug (FIXED in v1.0.1)
 **Symptoms**: Video storage shows correct frame count but items cannot be decoded, or wrong items are returned when querying specific IDs.
@@ -720,6 +858,240 @@ if (hasIndexedItems && !hasCatalogEntries) {
 
 **Prevention**: The fix ensures catalog is automatically rebuilt from the video index if it gets corrupted or deleted.
 
+## Auto-Learning System
+
+The auto-learning system automatically captures development knowledge from git commits tagged with `#kb` and integrates it into the memory system. See `docs/AUTO_LEARNING.md` for comprehensive user documentation.
+
+### Architecture
+
+**AutoLearnManager** (`src/autolearn/AutoLearnManager.ts` - 301 lines)
+- Central coordinator for all auto-learning functionality
+- Orchestrates hook installation and event processing
+- Integrates with MemoryManager for persistence
+- Provides MCP tool interface
+
+**AutoLearner** (`src/autolearn/AutoLearner.ts` - 540 lines)
+- Core event processing and materialization logic
+- Classifies commits by type (fix → insight, refactor → pattern, test → snippet)
+- Applies filters (minLinesChanged, file patterns)
+- Extracts symbols and context
+- Converts git events into searchable MemoryItems
+
+**GitHooksManager** (`src/autolearn/GitHooksManager.ts` - 427 lines)
+- Installs git hooks (`commit-msg`, `post-commit`)
+- Parses commit messages for `#kb` tags
+- Queues events in `.llm-memory/autolearn-queue.ndjson`
+- Extracts commit metadata and diffs
+- Detects symbols (function/class names) from diffs
+
+**ClaudeCodeHooksManager** (`src/autolearn/ClaudeCodeHooks.ts` - 238 lines)
+- Installs Claude Code hooks (session-start, post-commit, pre-response)
+- Copies from project `/hooks/` directory (source of truth)
+- Supports both project (`.claude/hooks/`) and global (`~/.claude/hooks/`) installation
+- Auto-creates `.claudeignore` for queue files
+
+**ClaudeCodeAgentsManager** (`src/autolearn/ClaudeCodeAgents.ts` - 230 lines)
+- Installs dev-memory-manager agent
+- Copies from project `/agents/` directory
+- Supports project and global installation
+- Provides fallback minimal agent if source missing
+
+### MCP Integration
+
+**5 New MCP Tools** (src/index.ts:742-789, 1687-1758):
+- `autolearn.status` — Get system status, hook installation state, queue size
+- `autolearn.init` — Initialize auto-learning for current project (auto-install hooks)
+- `autolearn.processQueue` — Process queued events from git commits
+- `autolearn.captureCommit` — Manually capture a specific commit by hash
+- `autolearn.installGlobally` — Install hooks and agents to `~/.claude/` directory
+
+**Automatic Initialization** (src/index.ts:75-90):
+The MCP server auto-initializes auto-learning on client connect:
+1. Detects project via `MemoryManager.getProjectInfo()`
+2. Creates `AutoLearnManager` instance
+3. Calls `initialize(projectRoot, autoInstall=true)`
+4. Logs success/failure status with emojis
+5. Non-blocking with graceful error handling
+6. Only initializes once per project
+
+### Event Flow
+
+**1. Commit with #kb Tag:**
+```bash
+git commit -m "Implement JWT authentication #kb #security"
+```
+
+**2. Git Hook Captures Event:**
+- `commit-msg` hook detects `#kb` tag
+- `post-commit` hook captures:
+  - Commit hash, message, author, date
+  - Full diff of changes
+  - File paths and line counts
+  - Extracted symbols (functions, classes)
+  - Additional hashtags from message
+
+**3. Event Queued:**
+```json
+{
+  "type": "commit",
+  "hash": "a1b2c3d",
+  "message": "Implement JWT authentication #kb #security",
+  "diff": "...",
+  "timestamp": "2025-10-11T20:00:00Z",
+  "files": ["src/auth.ts"],
+  "symbols": ["verifyToken", "refreshToken"],
+  "tags": ["kb", "security"]
+}
+```
+
+**4. Event Materialization:**
+- AutoLearner reads queue
+- Applies filters (minLinesChanged, file patterns)
+- Classifies commit type:
+  - "fix" → `insight` memory
+  - "refactor" → `pattern` memory
+  - "test" → `snippet` memory
+  - "add"/"implement" → `snippet` memory
+  - default → `note` memory
+- Extracts code from diff
+- Creates MemoryItem with:
+  - Type based on commit message
+  - Title from commit summary
+  - Text from commit body
+  - Code from diff
+  - Tags from hashtags
+  - Files and symbols from context
+  - Automatic secret redaction
+
+**5. Memory Searchable:**
+```typescript
+memory.query({
+  q: "JWT authentication",
+  scope: "project",
+  k: 10
+})
+// Returns the captured knowledge
+```
+
+### Development Patterns
+
+**Event Materialization Pattern:**
+```typescript
+// Git event from queue
+const event = {
+  type: 'fix',
+  context: {
+    files: ['src/auth.ts'],
+    symbols: ['verifyToken'],
+    summary: 'Fixed JWT expiration check',
+    tags: ['auth', 'security'],
+    diff: '...'
+  }
+};
+
+// AutoLearner materializes to MemoryItem
+const memory = {
+  type: 'insight',  // 'fix' → 'insight'
+  title: 'Fixed JWT expiration check',
+  text: event.context.summary,
+  code: extractCodeFromDiff(event.context.diff),
+  facets: {
+    tags: ['auth', 'security', 'fix'],
+    files: ['src/auth.ts'],
+    symbols: ['verifyToken']
+  },
+  scope: 'local',
+  quality: { confidence: 0.7 },  // Default for auto-learned
+  security: { sensitivity: 'private' }
+};
+```
+
+**Configuration (AutoLearnConfig):**
+```typescript
+interface AutoLearnConfig {
+  enabled: boolean;
+  captureTypes: ('commit' | 'fix' | 'refactor' | 'pattern')[];
+  gitHooks: {
+    enabled: boolean;
+    tagPattern: string;      // default: '#kb'
+    captureDiffs: boolean;
+    maxDiffSize: number;     // default: 10000
+  };
+  filters: {
+    minLinesChanged: number;  // default: 5
+    includePatterns: string[];  // default: ['**/*.ts', '**/*.js']
+    excludePatterns: string[];  // default: ['**/node_modules/**', '**/dist/**']
+  };
+  storage: {
+    autoCommit: boolean;      // default: false
+    scope: MemoryScope;       // default: 'local'
+    defaultType: MemoryType;  // default: 'snippet'
+  };
+  insights: {
+    enabled: boolean;         // default: true
+    minOccurrences: number;   // default: 3 (for pattern detection)
+  };
+}
+```
+
+### Testing Auto-Learning
+
+**Check Installation:**
+```bash
+# Git hooks
+ls -la .git/hooks/ | grep -E '(commit-msg|post-commit)'
+chmod +x .git/hooks/commit-msg .git/hooks/post-commit
+
+# Claude Code hooks
+ls -la .claude/hooks/
+ls -la ~/.claude/hooks/
+
+# Queue file
+cat .llm-memory/autolearn-queue.ndjson
+```
+
+**Test via MCP:**
+```bash
+# Check status
+echo '{"name":"autolearn.status","arguments":{}}' | node dist/index.js
+
+# Process queue
+echo '{"name":"autolearn.processQueue","arguments":{}}' | node dist/index.js
+
+# Capture specific commit
+echo '{"name":"autolearn.captureCommit","arguments":{"commitHash":"HEAD"}}' | node dist/index.js
+```
+
+### Important Auto-Learning Files
+
+**Core Implementation:**
+- `src/autolearn/AutoLearnManager.ts`: Central coordinator (301 lines)
+- `src/autolearn/AutoLearner.ts`: Event processing logic (540 lines)
+- `src/autolearn/GitHooksManager.ts`: Git hook management (427 lines)
+- `src/autolearn/ClaudeCodeHooks.ts`: Claude Code hook installation (238 lines)
+- `src/autolearn/ClaudeCodeAgents.ts`: Agent installation (230 lines)
+- `src/types/AutoLearning.ts`: Type definitions
+
+**Hook Templates (Source of Truth):**
+- `/hooks/session-start.md`: Claude Code session initialization hook
+- `/hooks/post-commit.md`: Commit notification hook
+- `/hooks/pre-response.md`: Knowledge retrieval hook
+- `/agents/dev-memory-manager.md`: Enhanced agent with auto-learning
+
+**Installed Hooks:**
+- `.git/hooks/commit-msg`: Detects `#kb` tags (project-specific)
+- `.git/hooks/post-commit`: Captures commit events (project-specific)
+- `.claude/hooks/*.md`: Claude Code hooks (project or global)
+- `.claude/agents/dev-memory-manager.md`: Enhanced agent (project or global)
+
+**Queue Files:**
+- `.llm-memory/autolearn-queue.ndjson`: Event queue (not committed)
+- `.git/llm-memory-autolearn.tmp`: Git hook temp file (not committed)
+- `.claudeignore`: Auto-created to exclude queue files
+
+**Documentation:**
+- `docs/AUTO_LEARNING.md`: Comprehensive user guide (251 lines)
+
 ## Important Files Reference
 
 **Core Server**:
@@ -732,7 +1104,15 @@ if (hasIndexedItems && !hasCatalogEntries) {
 - `src/storage/VideoStorageAdapter.ts`: Video backend implementation (48KB)
 - `src/storage/fileStore.ts`: Low-level file operations (26KB)
 - `src/storage/Indexer.ts`: BM25 search indexing (5.9KB)
-- `src/storage/VectorIndex.ts`: Vector similarity search (4.4KB)
+- `src/storage/VectorIndex.ts`: Linear vector index (O(n) search, 4.4KB)
+- `src/storage/HNSWVectorIndex.ts`: HNSW vector index (O(log n) search, 9.0KB)
+
+**Embeddings**:
+- `src/embeddings/LocalEmbedder.ts`: Local embedding generation with transformers.js (5.8KB)
+  - Three models: bge-small-en-v1.5 (384D, default), all-MiniLM-L6-v2 (384D), all-mpnet-base-v2 (768D)
+  - Instance management with proper cleanup to prevent memory leaks
+  - Automatic model download and caching
+  - Parallel batch embedding using Promise.all
 
 **Video Storage**:
 - `src/video/VideoEncoder.ts`: Video encoding abstraction

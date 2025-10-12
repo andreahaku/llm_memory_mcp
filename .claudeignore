@@ -1,0 +1,3 @@
+# Auto-learning data
+.llm-memory/autolearn-queue.ndjson
+.git/llm-memory-autolearn.tmp

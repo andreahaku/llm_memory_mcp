@@ -1,12 +1,15 @@
 # LLM Memory MCP Server (Memory-First)
 
-A local-first, team-ready MCP server that provides a durable memory system for LLM-based coding workflows. It’s optimized for JavaScript/TypeScript development (web and mobile), but works for any stack. Memory items can be stored globally, locally per project, or committed to the repo for team sharing — with fast search, ranking, and per-scope tuning.
+A local-first, team-ready MCP server that provides a durable memory system for LLM-based coding workflows. It's optimized for JavaScript/TypeScript development (web and mobile), but works for any stack. Memory items can be stored globally, locally per project, or committed to the repo for team sharing — with fast search, ranking, and per-scope tuning.
 
 ## Highlights
 
+- **Three Storage Backends**: Choose between file (JSON), video (QR+MP4 compression), or markdown (Obsidian-compatible)
 - **Revolutionary Video Storage**: 50-100x compression through QR code + video encoding while maintaining sub-100ms search
-- **Automatic Backend Selection**: Intelligent detection of FFmpeg capabilities with graceful fallback to file storage
-- **Dual Storage Architecture**: Seamless switching between video compression and traditional file storage
+- **Markdown/Obsidian Integration**: Native markdown format with YAML frontmatter and wikilinks for Obsidian vaults
+- **Local Embeddings & HNSW Search**: Offline semantic search with transformers.js and O(log n) vector indexing - no external APIs required
+- **Automatic Backend Selection**: Intelligent detection of capabilities with seamless migration between backends
+- **Flexible Storage Architecture**: Switch between file, video, and markdown storage at any time
 - **New: Automatic Memory Discovery**: MCP prompts check relevant memories before tasks (inspired by Claude's memory tool)
 - **New: Incremental Editing**: Patch, append, and merge operations for efficient memory updates
 - **New: TTL Auto-Pruning**: Automatic cleanup of expired memories with configurable time-to-live
@@ -14,6 +17,7 @@ A local-first, team-ready MCP server that provides a durable memory system for L
 - Scopes: global (personal), local (per-project, uncommitted), committed (project/.llm-memory)
 - **Intelligent Confidence Scoring**: Automatic quality assessment based on usage patterns, feedback, and time-based decay
 - Fast search: BM25 scoring + boosts (scope, pin, recency, confidence) with phrase/title bonuses
+- **Hybrid Search**: Combine keyword-based BM25 with semantic vector similarity for best-of-both-worlds retrieval
 - **User Feedback System**: Record helpful/not helpful feedback to improve confidence scoring
 - **Optimized Journal System**: Content-based hashing reduces journal storage by 81-95% with automatic migration
 - Tuning via config.json per scope (field weights, bm25, boosts, confidence parameters)
@@ -220,11 +224,293 @@ The agent respects your LLM Memory MCP server configuration:
 
 No additional configuration needed - the agent adapts to your existing memory setup.
 
-## Video Storage Architecture
+## Auto-Learning from Git Commits
 
-### Revolutionary Compression Technology
+Automatically capture development knowledge from your git commits to build a searchable knowledge base of your coding patterns, solutions, and insights.
 
-The LLM Memory MCP Server features a breakthrough video-based storage system that achieves **50-100x compression ratios** while maintaining sub-100ms search performance. This innovative approach uses QR code encoding combined with video compression to dramatically reduce storage requirements.
+### Quick Start
+
+**1. Tag commits with `#kb` to capture knowledge:**
+```bash
+git commit -m "Implement JWT authentication with refresh tokens #kb #security"
+```
+
+**2. System automatically captures:**
+- Commit message and metadata
+- Code changes (diff)
+- Affected files and symbols
+- Additional context tags
+
+**3. Process captured events:**
+```json
+{ "name": "autolearn.processQueue", "arguments": {} }
+```
+
+**4. Knowledge becomes searchable:**
+```json
+{
+  "name": "memory.query",
+  "arguments": {
+    "q": "JWT authentication",
+    "scope": "project",
+    "k": 10
+  }
+}
+```
+
+### How It Works
+
+The auto-learning system consists of three integrated components:
+
+**1. Git Hooks** (automatically installed)
+- `commit-msg`: Detects `#kb` tags in commit messages
+- `post-commit`: Captures commit details to queue file
+
+**2. Event Queue** (`.llm-memory/autolearn-queue.ndjson`)
+- Stores captured events until processed
+- Survives server restarts
+- Prevents data loss
+
+**3. Materialization** (converts events to memories)
+- Classifies commits by type (fix → insight, refactor → pattern)
+- Extracts code snippets and context
+- Creates searchable MemoryItems
+
+### MCP Tools for Auto-Learning
+
+**Check System Status:**
+```json
+{ "name": "autolearn.status", "arguments": {} }
+```
+
+Returns:
+- Hook installation status
+- Queue size
+- System configuration
+
+**Initialize Auto-Learning:**
+```json
+{ "name": "autolearn.init", "arguments": { "autoInstall": true } }
+```
+
+Installs git hooks and Claude Code hooks/agents.
+
+**Process Event Queue:**
+```json
+{ "name": "autolearn.processQueue", "arguments": {} }
+```
+
+Processes all queued events and creates memories.
+
+**Capture Specific Commit:**
+```json
+{ "name": "autolearn.captureCommit", "arguments": { "commitHash": "HEAD" } }
+```
+
+Manually capture a commit (useful for retroactive capture).
+
+**Install Globally:**
+```json
+{ "name": "autolearn.installGlobally", "arguments": {} }
+```
+
+Install hooks and agents in your global Claude Code directory (`~/.claude/`).
+
+### Usage Examples
+
+**Capture Bug Fix:**
+```bash
+git commit -m "Fix race condition in authentication middleware #kb #bug #async"
+```
+
+Creates an `insight` memory with:
+- Title: "Fix race condition in authentication middleware"
+- Tags: kb, bug, async, fix
+- Code: Affected code from diff
+- Files: Modified files
+- Symbols: Extracted function/class names
+
+**Capture Pattern:**
+```bash
+git commit -m "Refactor API client with retry logic pattern #kb #pattern #resilience"
+```
+
+Creates a `pattern` memory documenting the retry pattern.
+
+**Capture Configuration:**
+```bash
+git commit -m "Add ESLint config for TypeScript strict mode #kb #config #typescript"
+```
+
+Creates a `config` memory with the configuration template.
+
+### Automatic Initialization
+
+When you connect the MCP server to Claude Code (or other MCP clients), the system automatically:
+
+1. **Detects your project** via git repository detection
+2. **Initializes auto-learning** with hook installation
+3. **Logs status** showing what was installed
+4. **Ready to capture** - just use `#kb` in commits
+
+No manual setup required! The system works out of the box.
+
+### Integration with dev-memory-manager Agent
+
+The dev-memory-manager agent integrates with auto-learning to:
+
+- **Check for queued events** on session start
+- **Process and present** captured knowledge
+- **Suggest** adding `#kb` tags to important commits
+- **Ensure hooks** are installed and working
+
+This creates a seamless workflow where you focus on coding and committing, and the system automatically builds your knowledge base.
+
+### Configuration
+
+Auto-learning respects the standard memory configuration system. Configure via `project.config.set`:
+
+```json
+{
+  "name": "project.config.set",
+  "arguments": {
+    "scope": "local",
+    "config": {
+      "version": "1",
+      "autolearn": {
+        "enabled": true,
+        "captureTypes": ["commit", "fix", "refactor", "pattern"],
+        "gitHooks": {
+          "enabled": true,
+          "tagPattern": "#kb",
+          "captureDiffs": true,
+          "maxDiffSize": 10000
+        },
+        "filters": {
+          "minLinesChanged": 5,
+          "includePatterns": ["**/*.ts", "**/*.js"],
+          "excludePatterns": ["**/node_modules/**", "**/dist/**"]
+        },
+        "storage": {
+          "scope": "local",
+          "defaultType": "snippet"
+        }
+      }
+    }
+  }
+}
+```
+
+### Best Practices
+
+**When to Use `#kb` Tags:**
+- ✅ Implementing new features or patterns
+- ✅ Fixing complex bugs with reusable solutions
+- ✅ Adding configurations or templates
+- ✅ Refactoring with architectural insights
+- ✅ Creating utilities or helper functions
+
+**When NOT to Use `#kb` Tags:**
+- ❌ Trivial changes (typos, formatting)
+- ❌ WIP/temporary commits
+- ❌ Merge commits or rebases
+- ❌ Commits with sensitive information
+
+**Tagging Strategy:**
+```bash
+# Include descriptive context tags
+git commit -m "Add rate limiting middleware #kb #security #express #middleware"
+
+# Use type indicators
+git commit -m "Fix memory leak in WebSocket handler #kb #bug #websocket"
+
+# Reference related systems
+git commit -m "Refactor authentication flow #kb #pattern #auth #jwt"
+```
+
+### Troubleshooting
+
+**Hooks not triggering?**
+```bash
+# Check hook installation
+ls -la .git/hooks/ | grep -E '(commit-msg|post-commit)'
+
+# Verify executable permissions
+chmod +x .git/hooks/commit-msg .git/hooks/post-commit
+
+# Check for marker file (created after #kb commit)
+ls -la .git/llm-memory-autolearn.tmp
+```
+
+**Queue not processing?**
+```bash
+# Check queue contents
+cat .llm-memory/autolearn-queue.ndjson
+
+# Check system status
+echo '{"name":"autolearn.status","arguments":{}}' | node dist/index.js
+
+# Manually process queue
+echo '{"name":"autolearn.processQueue","arguments":{}}' | node dist/index.js
+```
+
+**Agents not active?**
+```bash
+# Check agent installation
+ls -la ~/.claude/agents/ | grep dev-memory-manager
+
+# Check project-level agents
+ls -la .claude/agents/
+
+# Restart Claude Code to reload agents
+```
+
+For more detailed documentation, see [`docs/AUTO_LEARNING.md`](docs/AUTO_LEARNING.md).
+
+## Storage Backends
+
+The LLM Memory MCP Server supports three storage backends, each optimized for different use cases:
+
+### 1. Markdown Storage (Obsidian-Compatible)
+
+**Perfect for:** Knowledge management, team wikis, Obsidian users, human-readable storage
+
+Stores memories as individual markdown files with YAML frontmatter, fully compatible with Obsidian and other markdown tools. Each memory is a standalone `.md` file with:
+- **YAML frontmatter** containing metadata (id, type, tags, confidence, etc.)
+- **Markdown body** with title, description, and code blocks
+- **Wikilinks** for linking related memories (`[[memory-id-title]]`)
+- **Context sections** showing repository, file, and tool information
+
+**Benefits:**
+- ✅ Human-readable and editable in any text editor
+- ✅ Full Obsidian integration with graph view, backlinks, and wikilinks
+- ✅ Version control friendly (git diff works naturally)
+- ✅ Easy to share, review, and collaborate on
+- ✅ No external dependencies required
+
+**Storage Structure:**
+```
+_LLM_memories/
+  react-project/              # Project-based subfolder (from repoId)
+    01ABC-react-hooks.md
+    01DEF-typescript-patterns.md
+  nodejs-api/                 # Different project
+    01GHI-express-middleware.md
+  _global/                    # Memories without specific project
+    01JKL-git-workflow.md
+```
+
+Memories are automatically organized by project using the `repoId` from their context. This makes it easy to:
+- Navigate memories by project in Obsidian's file explorer
+- Use Obsidian's folder-based features (tags, filters, views)
+- Keep project knowledge isolated and organized
+- Find related memories within the same project
+
+### 2. Video Storage (Ultra-Compressed)
+
+**Perfect for:** Large codebases, storage-constrained environments, archival
+
+Revolutionary video-based storage system that achieves **50-100x compression ratios** while maintaining sub-100ms search performance. Uses QR code encoding combined with video compression to dramatically reduce storage requirements.
 
 ### How Video Storage Works
 
@@ -255,14 +541,37 @@ Content → QR Code Encoding → Video Frame → H.264/H.265 Compression → Ult
 └────────────────┴──────────────┴──────────────┴──────────────┘
 ```
 
-### Automatic Backend Detection
+### 3. File Storage (Traditional JSON)
 
-The system intelligently detects available video encoding capabilities:
+**Perfect for:** Maximum compatibility, no dependencies, debugging
+
+Traditional JSON-based storage with optimized journaling and content-based hashing. Each memory is stored as a separate JSON file with automatic journal compaction.
+
+**Benefits:**
+- ✅ No external dependencies
+- ✅ Fast and reliable
+- ✅ Optimized journal with 81-95% compression via SHA-256 hashing
+- ✅ Works everywhere Node.js runs
+
+**Storage Structure:**
+```
+items/
+  01ABC.json
+  01DEF.json
+journal-optimized.ndjson
+catalog.json
+```
+
+### Backend Selection and Detection
+
+The system intelligently detects available storage capabilities and selects the optimal backend:
 
 **Detection Priority:**
-1. **Native FFmpeg** - Maximum performance (200-600 fps encoding)
-2. **FFmpeg.wasm** - JavaScript fallback (10-40 fps encoding)
-3. **File Storage** - Traditional JSON storage with optimized journaling
+1. **Config Check** - Explicit `storage.backend` setting in config.json
+2. **Markdown Detection** - Presence of `memories/` directory with `.md` files
+3. **Video Detection** - Presence of `segments/` directory with video files
+4. **FFmpeg Check** - Native FFmpeg availability (for video encoding)
+5. **Fallback** - File storage (always available)
 
 **FFmpeg Detection:**
 ```typescript
@@ -318,25 +627,35 @@ The system automatically selects the optimal storage backend and configures comp
 ```
 
 **Configuration Options:**
-- `backend`: `"auto"` (default), `"video"`, `"file"`
-- `codec`: `"h264"` (default), `"h265"`
-- `crf`: Quality setting (18-28, lower = higher quality)
-- `preset`: Encoding speed (`"fast"`, `"medium"`, `"slow"`)
-- `errorCorrection`: QR error correction (`"L"`, `"M"`, `"Q"`, `"H"`)
+- `backend`: `"auto"` (default), `"file"`, `"video"`, `"markdown"`
+- `codec`: `"h264"` (default), `"h265"` (video only)
+- `crf`: Quality setting (18-28, lower = higher quality) (video only)
+- `preset`: Encoding speed (`"fast"`, `"medium"`, `"slow"`) (video only)
+- `errorCorrection`: QR error correction (`"L"`, `"M"`, `"Q"`, `"H"`) (video only)
 
 ### Migration Between Storage Backends
 
-The system provides seamless migration between file and video storage:
+The system provides seamless migration between all three storage backends (file ↔ video ↔ markdown):
 
 **Check Migration Status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.status", "arguments": { "scope": "local", "backend": "markdown" } }
+```
+
+**Migrate to Markdown Storage:**
+```json
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "file",
+  "targetBackend": "markdown",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
 ```
 
 **Migrate to Video Storage:**
 ```json
 { "name": "migration.storage.backend", "arguments": {
-  "sourceBackend": "file",
+  "sourceBackend": "markdown",
   "targetBackend": "video",
   "scope": "local",
   "validateAfterMigration": true
@@ -428,15 +747,121 @@ LLM_MEMORY_FORCE_BACKEND=video pnpm start
   snapshot-meta.json       # integrity verification metadata
 ```
 
+**Markdown Storage Layout:**
+```
+<scope-root>/
+  _LLM_memories/          # Root memories folder
+    project-a/            # Project-specific subfolders (based on repoId)
+      01ABC-component.md
+      01DEF-util.md
+    project-b/
+      01GHI-api.md
+    _global/              # Memories without specific project
+      01JKL-pattern.md
+  .memory/                # Hidden metadata directory
+    catalog.json          # id → MemoryItemSummary
+    config.json           # per-scope configuration
+    index/                # Search indexes
+      inverted.json
+      vectors.bin
+      meta.json
+```
+
 **Storage Backend Auto-Selection:**
-- System automatically detects FFmpeg and chooses optimal storage backend
+- System automatically detects storage backend based on directory structure
 - `config.json` contains `storage.backend` field indicating active backend
-- Seamless migration between backends using migration tools
+- Seamless migration between all three backends using migration tools
 
 Initialize committed scope in current project:
 ```json
 { "name": "project.initCommitted", "arguments": {} }
 ```
+
+## Obsidian Integration
+
+When using markdown storage backend, memories are fully compatible with Obsidian, enabling powerful knowledge management features:
+
+### Setup with Obsidian
+
+1. **Enable markdown storage:**
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": { "version": "1", "storage": { "backend": "markdown" } }
+}}
+```
+
+2. **Open your memory folder in Obsidian:**
+   - Global: `~/.llm-memory/global/_LLM_memories/`
+   - Local: `~/.llm-memory/projects/<project-hash>/_LLM_memories/`
+   - Committed: `<project>/.llm-memory/_LLM_memories/`
+
+   **Project Organization**: Memories are automatically organized into subfolders based on their project (`repoId`):
+   - `_LLM_memories/react-app/` - Memories from your React project
+   - `_LLM_memories/api-server/` - Memories from your API project
+   - `_LLM_memories/_global/` - Memories without a specific project
+
+3. **Features you get:**
+   - 📊 **Graph View** - Visualize connections between memories
+   - 🔗 **Wikilinks** - Click `[[memory-id-title]]` to navigate
+   - ⬅️ **Backlinks** - See which memories reference the current one
+   - 🔍 **Full-text Search** - Use Obsidian's powerful search
+   - 🏷️ **Tags** - Filter and organize with #tags
+   - ✍️ **Edit Anywhere** - Modify memories in Obsidian or your IDE
+
+### Memory File Format
+
+Each memory is a markdown file with YAML frontmatter:
+
+```markdown
+---
+id: 01JDF97ZMB000000000000001
+type: pattern
+scope: global
+title: React Hooks Best Practices
+language: typescript
+tags: [react, hooks, best-practices]
+confidence: 0.85
+pinned: false
+createdAt: 2025-10-11T13:10:00.000Z
+updatedAt: 2025-10-11T13:10:00.000Z
+version: 1
+---
+
+# React Hooks Best Practices
+
+Essential patterns for using React Hooks effectively.
+
+## Code
+
+\`\`\`typescript
+// Your code here
+\`\`\`
+
+## Related Memories
+
+- [[01ABC-typescript-generics]]
+- [[01DEF-react-performance]]
+
+## Context
+
+- **Tool**: Claude Code
+- **Framework**: React
+```
+
+### Obsidian API Integration
+
+For programmatic access to your Obsidian vault, install the [Local REST API plugin](https://github.com/coddingtonbear/obsidian-local-rest-api):
+
+1. Install the plugin in Obsidian
+2. Enable HTTPS in plugin settings
+3. Generate an API key
+4. Use the REST API to read/write memories programmatically
+
+This enables powerful workflows like:
+- Sync memories to Obsidian in real-time
+- Create memories from Obsidian notes
+- Automate knowledge capture from development sessions
 
 ## MCP Tools
 
@@ -486,9 +911,9 @@ Initialize committed scope in current project:
 - **journal.migrate** — Migrate legacy journal to optimized format
 - **journal.verify** — Verify integrity using optimized journal hashes
 
-### **Video Storage & Migration Tools**
-- **migration.status** — Check migration status and storage metrics
-- **migration.storage.backend** — Migrate between file and video storage backends
+### **Storage Backend & Migration Tools**
+- **migration.status** — Check migration status and storage metrics for any backend (file/video/markdown)
+- **migration.storage.backend** — Migrate between storage backends (file ↔ video ↔ markdown)
 - **migration.scope** — Migrate filtered memories between scopes (global/local/committed)
 - **migration.validate** — Validate migration integrity and consistency
 
@@ -582,10 +1007,20 @@ Record usage event for confidence scoring:
 
 **Check storage backend and migration status:**
 ```json
-{ "name": "migration.status", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.status", "arguments": { "scope": "local", "backend": "markdown" } }
 ```
 
-**Migrate from file to video storage:**
+**Migrate from file to markdown storage (Obsidian-compatible):**
+```json
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "file",
+  "targetBackend": "markdown",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
+```
+
+**Migrate from file to video storage (ultra-compressed):**
 ```json
 { "name": "migration.storage.backend", "arguments": {
   "sourceBackend": "file",
@@ -595,9 +1030,19 @@ Record usage event for confidence scoring:
 }}
 ```
 
-**Validate video storage integrity:**
+**Migrate from markdown to video storage:**
 ```json
-{ "name": "migration.validate", "arguments": { "scope": "local", "backend": "video" } }
+{ "name": "migration.storage.backend", "arguments": {
+  "sourceBackend": "markdown",
+  "targetBackend": "video",
+  "scope": "local",
+  "validateAfterMigration": true
+}}
+```
+
+**Validate storage integrity:**
+```json
+{ "name": "migration.validate", "arguments": { "scope": "local", "backend": "markdown" } }
 ```
 
 Rebuild catalog and index for project scopes:
@@ -833,36 +1278,283 @@ Example configuration:
 }
 ```
 
-## Hybrid Vector Search
+## Local Embeddings & Hybrid Search
 
-Enable hybrid search via config (per scope) and provide vectors for items and query:
+### Overview
 
-1) Enable hybrid and set weights:
+The system includes **local embedding generation** using transformers.js and **HNSW vector indexing** for high-performance semantic search. This enables:
+
+- **Offline embedding generation** - No external API calls or network dependencies
+- **HNSW (Hierarchical Navigable Small World)** - O(log n) search complexity vs O(n) linear scan
+- **Hybrid search** - Combine keyword-based BM25 with semantic vector similarity
+- **Multiple embedding models** - Choose based on your needs (speed vs quality vs dimensions)
+- **Auto-embedding** - Automatic vector generation on memory upsert (configurable)
+
+### Available Embedding Models
+
+Three pre-configured models, all running locally via transformers.js:
+
+| Model | Dimensions | Max Tokens | Best For | Speed |
+|-------|------------|------------|----------|-------|
+| **bge-small-en-v1.5** (default) | 384 | 512 | Code and technical documentation | ⚡⚡ |
+| **all-MiniLM-L6-v2** | 384 | 256 | General text, fast inference | ⚡⚡⚡ |
+| **all-mpnet-base-v2** | 768 | 384 | Higher quality semantic matching | ⚡⚡ |
+
+First run downloads the model (~25-90MB depending on model), then cached locally in `.cache/transformers/`.
+
+### Quick Start with Local Embeddings
+
+**1. Enable embeddings in configuration:**
 ```json
-{ "name": "project.config.set", "arguments": { "scope": "committed", "config": { "version": "1", "ranking": { "hybrid": { "enabled": true, "wBM25": 0.7, "wVec": 0.3, "model": "local-emb" } } } } }
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "embeddings": {
+      "enabled": true,
+      "model": "bge-small-en-v1.5",
+      "indexType": "hnsw",
+      "autoGenerate": true
+    }
+  }
+}}
 ```
 
-2) Set an item vector:
+**2. Create a memory (auto-embedding happens in background):**
 ```json
-{ "name": "vectors.set", "arguments": { "scope": "local", "id": "01ABC...", "vector": [0.1, -0.2, 0.05, ...] } }
+{ "name": "memory.upsert", "arguments": {
+  "type": "snippet",
+  "scope": "local",
+  "title": "React useDebounce Hook",
+  "code": "const useDebounce = (value, delay) => { /* implementation */ }",
+  "language": "typescript",
+  "tags": ["react", "hooks", "performance"]
+}}
 ```
 
-3) Query with a query embedding:
+**3. Manually embed specific memories:**
 ```json
-{ "name": "memory.query", "arguments": { "q": "authentication flow", "scope": "project", "k": 20, "vector": [/* query embedding */], "filters": { "type": ["snippet", "pattern"] } } }
+{ "name": "embeddings.memory", "arguments": { "id": "01ABC...", "scope": "local" } }
 ```
 
-The server blends BM25 and cosine scores per configured weights, then applies boosts and phrase/title bonuses.
-
-Bulk vector import (JSONL)
-- Prepare a JSONL file where each line is: {"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
-- Import with optional dimension override:
+**4. Batch embed multiple memories:**
 ```json
-{ "name": "vectors.importJsonl", "arguments": { "scope": "local", "path": "/abs/path/vectors.jsonl", "dim": 768 } }
+{ "name": "embeddings.memories", "arguments": {
+  "ids": ["01ABC...", "01DEF...", "01GHI..."],
+  "scope": "local"
+}}
 ```
-Or pass items inline:
+
+**5. Generate embedding for raw text:**
 ```json
-{ "name": "vectors.importBulk", "arguments": { "scope": "local", "items": [{"id":"01A","vector":[0.1,0.2]},{"id":"01B","vector":[0.0,0.3]}] } }
+{ "name": "embeddings.text", "arguments": {
+  "text": "How to implement authentication in React?",
+  "model": "bge-small-en-v1.5"
+}}
+```
+
+**6. Get model information:**
+```json
+{ "name": "embeddings.modelInfo", "arguments": { "model": "bge-small-en-v1.5" } }
+```
+
+### Hybrid Search Configuration
+
+Enable hybrid search to combine BM25 keyword matching with semantic vector similarity:
+
+**1) Enable hybrid search and set weights:**
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "ranking": {
+      "hybrid": {
+        "enabled": true,
+        "wBM25": 0.7,      // 70% weight on keyword matching
+        "wVec": 0.3,       // 30% weight on semantic similarity
+        "model": "bge-small-en-v1.5"
+      }
+    },
+    "embeddings": {
+      "enabled": true,
+      "autoGenerate": true
+    }
+  }
+}}
+```
+
+**2) Query with hybrid search (automatic when configured):**
+```json
+{ "name": "memory.query", "arguments": {
+  "q": "react hooks best practices",
+  "scope": "project",
+  "k": 10,
+  "filters": { "type": ["snippet", "pattern"] }
+}}
+```
+
+The system automatically:
+- Generates embedding for your query text
+- Computes BM25 scores for keyword matches
+- Computes cosine similarity scores for semantic matches
+- Blends scores using configured weights (wBM25, wVec)
+- Applies additional boosts (scope, recency, pin, phrase, title)
+- Returns ranked results
+
+### HNSW Index Configuration
+
+Fine-tune the HNSW index performance (advanced):
+
+```json
+{ "name": "project.config.set", "arguments": {
+  "scope": "local",
+  "config": {
+    "version": "1",
+    "embeddings": {
+      "enabled": true,
+      "model": "bge-small-en-v1.5",
+      "indexType": "hnsw",
+      "hnsw": {
+        "maxElements": 10000,      // Initial capacity (auto-resizes)
+        "M": 16,                   // Connections per node (higher = better recall, more memory)
+        "efConstruction": 200,     // Build quality (higher = better index, slower build)
+        "efSearch": 50             // Search quality (higher = better recall, slower search)
+      }
+    }
+  }
+}}
+```
+
+**Performance tuning:**
+- **M**: Number of bi-directional links (default: 16). Higher values improve recall but increase memory usage.
+- **efConstruction**: Dynamic candidate list size during index building (default: 200). Higher values create better indexes but take longer.
+- **efSearch**: Search candidate list size (default: 50). Higher values improve recall but slow down queries.
+
+### Embedding Storage
+
+Embeddings are stored alongside the search index in each scope:
+
+```
+<scope-root>/
+  index/
+    vectors.hnsw           # Binary HNSW index
+    vectors.meta.json      # Dimension, count, parameters
+    vectors.mapping.json   # ID to numeric label mapping
+```
+
+### Manual Vector Management
+
+For advanced use cases, you can manually manage vectors:
+
+**Set an item vector:**
+```json
+{ "name": "vectors.set", "arguments": {
+  "scope": "local",
+  "id": "01ABC...",
+  "vector": [0.1, -0.2, 0.05, /* ... */]
+}}
+```
+
+**Remove an item vector:**
+```json
+{ "name": "vectors.remove", "arguments": { "scope": "local", "id": "01ABC..." } }
+```
+
+**Bulk vector import (JSONL):**
+```json
+{ "name": "vectors.importJsonl", "arguments": {
+  "scope": "local",
+  "path": "/abs/path/vectors.jsonl",
+  "dim": 384
+}}
+```
+
+JSONL format (one object per line):
+```json
+{"id":"01ABC...","vector":[0.1,-0.2,0.05,...]}
+{"id":"01DEF...","vector":[0.2,0.1,-0.03,...]}
+```
+
+**Bulk vector import (inline):**
+```json
+{ "name": "vectors.importBulk", "arguments": {
+  "scope": "local",
+  "items": [
+    {"id":"01A","vector":[0.1,0.2,0.3]},
+    {"id":"01B","vector":[0.0,0.3,0.1]}
+  ]
+}}
+```
+
+### MCP Tools for Embeddings
+
+- **embeddings.text** — Generate embedding vector for raw text
+- **embeddings.memory** — Generate and store embedding for a memory by ID
+- **embeddings.memories** — Batch generate embeddings for multiple memories
+- **embeddings.modelInfo** — Get information about available models (dimensions, max tokens, description)
+- **vectors.set** — Set/update an item embedding
+- **vectors.remove** — Remove an item embedding
+- **vectors.importBulk** — Bulk import vectors (dimension consistency enforced)
+- **vectors.importJsonl** — Bulk import vectors from JSONL file
+
+### Performance Characteristics
+
+**HNSW vs Linear Search:**
+- Linear search: O(n) complexity, scans all vectors
+- HNSW search: O(log n) complexity, navigable small-world graph
+- **Speed improvement**: 10-100x faster on large datasets (>10k items)
+
+**Embedding Generation Speed (first run includes model download):**
+- bge-small-en-v1.5 (default): ~80-200ms per text (cached)
+- all-MiniLM-L6-v2: ~50-150ms per text (cached, fastest)
+- all-mpnet-base-v2: ~100-300ms per text (cached, highest quality)
+
+**Storage Overhead:**
+- 384D embeddings: ~1.5KB per item
+- 768D embeddings: ~3KB per item
+- HNSW index: ~2-4x raw vector size (depends on M parameter)
+
+### Troubleshooting
+
+**Model download issues:**
+```bash
+# Set custom cache directory
+export TRANSFORMERS_CACHE="/path/to/cache"
+pnpm start
+```
+
+**Memory usage concerns:**
+```bash
+# Use lighter model for even faster inference
+{ "embeddings": { "model": "all-MiniLM-L6-v2" } }  # Fastest option
+# Default is bge-small-en-v1.5 (optimized for code)
+```
+
+**Slow embedding generation:**
+- First run downloads model (~25-90MB) - this is normal
+- Subsequent runs use cached model and are much faster
+- Default bge-small-en-v1.5 is optimized for code
+- Use all-MiniLM-L6-v2 for fastest inference on general text
+
+**HNSW index errors:**
+```bash
+# Check index statistics
+echo '{"name": "maintenance.verify", "arguments": {"scope": "local"}}' | node dist/index.js
+
+# Rebuild index if corrupted
+rm -rf .llm-memory/index/vectors.*
+# Re-embed memories
+{ "name": "embeddings.memories", "arguments": { "ids": [...], "scope": "local" } }
+```
+
+**Dimension mismatch errors:**
+All vectors in a scope must have the same dimension. To change models:
+```bash
+# Remove existing vectors
+rm -rf .llm-memory/index/vectors.*
+# Update config with new model
+# Re-embed all memories
 ```
 
 ## Context Packs

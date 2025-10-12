@@ -30,7 +30,9 @@
     "test:migration": "jest tests/migration-validation.test.ts",
     "test:search": "jest tests/search-parity-validation.test.ts",
     "test:performance": "jest tests/performance-benchmarks.test.ts",
-    "test:report": "jest tests/feature-parity-report.test.ts"
+    "test:report": "jest tests/feature-parity-report.test.ts",
+    "install-hooks": "tsx scripts/install-hooks.ts",
+    "install-hooks:global": "tsx scripts/install-hooks.ts --global"
   },
   "packageManager": "pnpm@9.9.0",
   "keywords": [
@@ -48,8 +50,11 @@
     "@ffmpeg/ffmpeg": "^0.12.10",
     "@ffmpeg/util": "^0.12.2",
     "@modelcontextprotocol/sdk": "^0.4.0",
+    "@xenova/transformers": "^2.17.2",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
+    "hnswlib-node": "^3.0.0",
+    "js-yaml": "^4.1.0",
     "qrcode-generator": "^2.0.4",
     "uuid": "^9.0.1",
     "zlib": "^1.0.5",
@@ -58,6 +63,7 @@
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/jest": "^29.5.11",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.6",
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^6.16.0",

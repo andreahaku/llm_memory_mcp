@@ -79,10 +79,17 @@ coverage/
 # Local memory data (for testing)
 .llm-memory_backup_*/
 
+# Auto-learning queue and temporary files
+.llm-memory/autolearn-queue.ndjson
+.git/llm-memory-autolearn.tmp
+
+# Claude Code auto-installed hooks and agents (project-specific)
+.claude/
+
 # Test artifacts
 test-results/
 screenshots/
 
 # Temporary files
 tmp/
-temp/
+temp/test-data/

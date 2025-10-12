@@ -188,7 +188,7 @@ export interface ProjectInfo {
 export interface MemoryConfig {
   version: string;
   storage?: {
-    backend?: 'file' | 'video';
+    backend?: 'file' | 'video' | 'markdown';
   };
   sharing?: {
     enabled: boolean;
@@ -223,6 +223,18 @@ export interface MemoryConfig {
     compactIntervalMs?: number; // time-based compaction interval (default: 24h)
     indexFlush?: { maxOps?: number; maxMs?: number }; // index scheduler flush thresholds
     snapshotIntervalMs?: number; // periodic snapshot interval (default: 24h)
+  };
+  embeddings?: {
+    enabled?: boolean; // Enable auto-embedding on memory upsert (default: false)
+    model?: string; // Model key from LocalEmbedder (default: 'all-MiniLM-L6-v2')
+    indexType?: 'linear' | 'hnsw'; // Vector index type (default: 'hnsw')
+    autoGenerate?: boolean; // Generate embeddings for text+code on upsert (default: true when enabled)
+    hnsw?: {
+      maxElements?: number; // Max capacity (default: 10000)
+      M?: number; // HNSW connectivity parameter (default: 16)
+      efConstruction?: number; // Build quality (default: 200)
+      efSearch?: number; // Search quality (default: 50)
+    };
   };
 }
 
