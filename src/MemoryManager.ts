@@ -263,19 +263,12 @@ export class MemoryManager {
   }
 
   /**
-   * Detect the optimal default backend based on system capabilities
+   * Get the default backend - always returns 'file' (JSON) as the stable default.
+   * Users can explicitly set video or markdown storage via config if desired.
    */
   private detectOptimalDefaultBackend(): 'file' | 'video' | 'markdown' {
-    try {
-      // Check if FFmpeg is available and working
-      const { execSync } = require('child_process');
-      execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
-      log('FFmpeg detected - defaulting to video storage backend');
-      return 'video';
-    } catch (error) {
-      log('FFmpeg not available - defaulting to file storage backend');
-      return 'file';
-    }
+    log('Using file storage as default backend');
+    return 'file';
   }
 
   private detectStorageBackend(dir: string): 'file' | 'video' | 'markdown' {
