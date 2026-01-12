@@ -41,9 +41,9 @@ pnpm install
 pnpm run build
 ```
 
-### Video Storage Setup (Recommended)
+### Video Storage Setup (Optional)
 
-For optimal storage efficiency with 50-100x compression, install FFmpeg:
+For optimal storage efficiency with 50-100x compression, you can optionally install FFmpeg and configure video storage:
 
 **macOS:**
 ```bash
@@ -76,7 +76,7 @@ choco install ffmpeg
 scoop install ffmpeg
 ```
 
-The system automatically detects FFmpeg availability and enables video storage compression when available. Without FFmpeg, the system gracefully falls back to optimized file storage.
+The system defaults to file (JSON) storage for maximum compatibility. To use video storage, explicitly configure it via `config.json` with `"storage": { "backend": "video" }` or set the `LLM_MEMORY_DEFAULT_BACKEND=video` environment variable.
 
 ## Quick Start
 
@@ -564,28 +564,29 @@ catalog.json
 
 ### Backend Selection and Detection
 
-The system intelligently detects available storage capabilities and selects the optimal backend:
+The system uses file (JSON) storage by default and detects existing storage formats:
 
 **Detection Priority:**
 1. **Config Check** - Explicit `storage.backend` setting in config.json
-2. **Markdown Detection** - Presence of `memories/` directory with `.md` files
+2. **Markdown Detection** - Presence of `_LLM_memories/` directory with `.md` files
 3. **Video Detection** - Presence of `segments/` directory with video files
-4. **FFmpeg Check** - Native FFmpeg availability (for video encoding)
-5. **Fallback** - File storage (always available)
+4. **Environment Variable** - `LLM_MEMORY_DEFAULT_BACKEND` setting
+5. **Default** - File storage (always used when no other backend is detected)
 
-**FFmpeg Detection:**
-```typescript
-// Automatic detection on startup
-if (await hasNativeFFmpeg()) {
-  useVideoStorage = true;
-  encoderType = 'native';
-} else if (await hasWasmSupport()) {
-  useVideoStorage = true;
-  encoderType = 'wasm';
-} else {
-  useVideoStorage = false;
-  encoderType = 'file';
+**Explicit Backend Configuration:**
+```json
+// config.json - explicitly set your preferred backend
+{
+  "storage": {
+    "backend": "file"    // or "video" or "markdown"
+  }
 }
+```
+
+**Environment Variable:**
+```bash
+# Set default backend via environment
+export LLM_MEMORY_DEFAULT_BACKEND=video  # or "file" or "markdown"
 ```
 
 ### Performance Characteristics
