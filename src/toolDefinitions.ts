@@ -180,10 +180,22 @@ export const CORE_TOOLS: Tool[] = [
       scope: enm(SCOPE_FILTERS),
       maxTokens: num(),              // Token budget (default: 4000)
       includeAlwaysInject: bool(),   // Include all 'always' memories (default: true)
-      format: enm(CONTEXT_OUTPUT_FORMATS), // Output format: json, xml, markdown (default: xml)
+      format: enm(CONTEXT_OUTPUT_FORMATS), // Output format: json, markdown (default: json)
       minConfidence: num(),          // Min confidence threshold (default: 0.5)
       types: arr(enm(MEMORY_TYPES)), // Filter by memory types
       tags: arr(),                   // Filter by tags
+    }),
+  },
+  {
+    name: 'mem.recent',
+    description: 'Get recently accessed/modified memories',
+    inputSchema: obj({
+      scope: enm(SCOPE_FILTERS),
+      limit: num(),                  // Max results (default: 10)
+      types: arr(enm(MEMORY_TYPES)), // Filter by memory types
+      tags: arr(),                   // Filter by tags
+      sortBy: enm(['lastUsedAt', 'lastAccessedAt', 'updatedAt', 'createdAt']), // Sort field (default: lastAccessedAt)
+      since: str(),                  // Only return items accessed/modified since this ISO date
     }),
   },
   {

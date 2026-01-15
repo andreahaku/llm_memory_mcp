@@ -847,6 +847,19 @@ class LLMKnowledgeBaseServer {
             return { content: [{ type: 'text', text: result.formatted }] };
           }
 
+          case 'mem.recent': {
+            const result = await this.memory.getRecentMemories({
+              scope: args.scope as any,
+              limit: args.limit as number | undefined,
+              types: args.types as any,
+              tags: args.tags as string[] | undefined,
+              sortBy: args.sortBy as any,
+              since: args.since as string | undefined,
+            });
+
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          }
+
           case 'jour.stats': {
             const scope = args.scope as string || 'all';
 

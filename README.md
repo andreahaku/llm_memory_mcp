@@ -1078,7 +1078,6 @@ Memories can have an `injection` field with two values:
 { "name": "mem.context", "arguments": {
   "scope": "project",
   "maxTokens": 4000,
-  "format": "xml",
   "minConfidence": 0.5
 }}
 ```
@@ -1087,27 +1086,14 @@ Memories can have an `injection` field with two values:
 - `scope` - Which scopes to search (global, local, committed, project, all)
 - `maxTokens` - Token budget for output (default: 4000)
 - `includeAlwaysInject` - Include all 'always' injection memories first (default: true)
-- `format` - Output format: `xml`, `json`, or `markdown` (default: xml)
+- `format` - Output format: `json` or `markdown` (default: json)
 - `minConfidence` - Minimum confidence threshold (default: 0.5)
 - `types` - Filter by memory types (e.g., ["fact", "insight"])
 - `tags` - Filter by tags
 
 **Output Formats:**
 
-*XML Format (default)* - Claude-style structured injection:
-```xml
-<memories>
-  <fact type="fact" confidence="0.95" injection="always">
-    <title>User Preferences</title>
-    <content>User prefers TypeScript over JavaScript</content>
-  </fact>
-  <insight type="insight" confidence="0.82" tags="architecture, patterns">
-    BM25 search performs better than pure vector for code
-  </insight>
-</memories>
-```
-
-*JSON Format* - Machine-readable:
+*JSON Format (default)* - Machine-readable:
 ```json
 {
   "memories": [
@@ -1141,6 +1127,35 @@ User prefers TypeScript over JavaScript
 4. Output is truncated to fit within token budget
 
 This mirrors Claude's architecture where "user memories" are always injected, while "conversation history" is retrieved on-demand.
+
+### Recency-Based Retrieval (`mem.recent`)
+
+Retrieve recently accessed or modified memories, sorted by recency. This is useful for reviewing recent work or continuing where you left off.
+
+**Get 10 most recently accessed memories:**
+```json
+{ "name": "mem.recent", "arguments": {
+  "scope": "project",
+  "limit": 10
+}}
+```
+
+**Get memories modified in the last 24 hours:**
+```json
+{ "name": "mem.recent", "arguments": {
+  "scope": "local",
+  "sortBy": "updatedAt",
+  "since": "2024-01-14T00:00:00Z"
+}}
+```
+
+**Parameters:**
+- `scope` - Which scopes to search (global, local, committed, project, all)
+- `limit` - Maximum number of results (default: 10)
+- `types` - Filter by memory types (e.g., ["snippet", "insight"])
+- `tags` - Filter by tags
+- `sortBy` - Sort field: `lastUsedAt`, `lastAccessedAt`, `updatedAt`, or `createdAt` (default: lastAccessedAt)
+- `since` - Only return items accessed/modified since this ISO date
 
 ### Incremental Editing Operations
 

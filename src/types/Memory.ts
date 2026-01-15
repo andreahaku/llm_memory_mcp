@@ -294,7 +294,7 @@ export interface ConfidenceConfig {
 /**
  * Output format for context injection
  */
-export type ContextOutputFormat = 'json' | 'xml' | 'markdown';
+export type ContextOutputFormat = 'json' | 'markdown';
 
 /**
  * Query parameters for mem.context tool - retrieves memories for prompt injection
@@ -303,7 +303,7 @@ export interface ContextInjectionQuery {
   scope?: QueryScope;
   maxTokens?: number;           // Token budget for output (default: 4000)
   includeAlwaysInject?: boolean; // Include all 'always' injection memories (default: true)
-  format?: ContextOutputFormat;  // Output format (default: 'xml')
+  format?: ContextOutputFormat;  // Output format (default: 'json')
   minConfidence?: number;       // Minimum confidence threshold (default: 0.5)
   types?: MemoryType[];         // Filter by memory types
   tags?: string[];              // Filter by tags
@@ -331,4 +331,31 @@ export interface ContextInjectionMemory {
   title?: string;
   content: string;              // Combined text/code content
   tags: string[];
+}
+
+/**
+ * Sort field options for recency-based retrieval
+ */
+export type RecencySortField = 'lastUsedAt' | 'lastAccessedAt' | 'updatedAt' | 'createdAt';
+
+/**
+ * Query parameters for mem.recent tool - retrieves recently accessed/modified memories
+ */
+export interface RecencyQuery {
+  scope?: QueryScope;
+  limit?: number;               // Max results (default: 10)
+  types?: MemoryType[];         // Filter by memory types
+  tags?: string[];              // Filter by tags
+  sortBy?: RecencySortField;    // Sort field (default: 'lastAccessedAt')
+  since?: string;               // Only return items accessed/modified since this ISO date
+}
+
+/**
+ * Result from recency-based retrieval
+ */
+export interface RecencyResult {
+  items: MemoryItem[];
+  total: number;
+  scope: QueryScope;
+  sortBy: RecencySortField;
 }

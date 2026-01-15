@@ -28,6 +28,9 @@ import type {
   ContextInjectionMemory,
   ContextOutputFormat,
   MemoryType,
+  RecencyQuery,
+  RecencyResult,
+  RecencySortField,
 } from './types/Memory.js';
 
 function log(message: string, ...args: any[]) {
@@ -1711,7 +1714,7 @@ export class MemoryManager {
   async getContextForInjection(query: ContextInjectionQuery, cwd?: string): Promise<ContextInjectionResult> {
     const maxTokens = query.maxTokens ?? 4000;
     const includeAlwaysInject = query.includeAlwaysInject ?? true;
-    const format = query.format ?? 'xml';
+    const format = query.format ?? 'json';
     const minConfidence = query.minConfidence ?? 0.5;
     const now = new Date();
 
@@ -1822,54 +1825,16 @@ export class MemoryManager {
    */
   private formatContextInjection(memories: ContextInjectionMemory[], format: ContextOutputFormat): string {
     if (memories.length === 0) {
-      return format === 'json' ? '{"memories": []}' :
-             format === 'xml' ? '<memories></memories>' :
-             '# Memories\n\n_No memories available_';
+      return format === 'markdown' ? '# Memories\n\n_No memories available_' : '{"memories": []}';
     }
 
     switch (format) {
-      case 'xml':
-        return this.formatAsXml(memories);
       case 'markdown':
         return this.formatAsMarkdown(memories);
       case 'json':
       default:
         return JSON.stringify({ memories }, null, 2);
     }
-  }
-
-  /**
-   * Format memories as XML for Claude-style prompt injection
-   */
-  private formatAsXml(memories: ContextInjectionMemory[]): string {
-    const lines: string[] = ['<memories>'];
-
-    for (const mem of memories) {
-      const attrs = [
-        `type="${mem.type}"`,
-        `confidence="${mem.confidence.toFixed(2)}"`,
-      ];
-      if (mem.injection === 'always') {
-        attrs.push('injection="always"');
-      }
-      if (mem.tags.length > 0) {
-        attrs.push(`tags="${mem.tags.join(', ')}"`);
-      }
-
-      const openTag = `  <${mem.type} ${attrs.join(' ')}>`;
-
-      if (mem.title) {
-        lines.push(openTag);
-        lines.push(`    <title>${this.escapeXml(mem.title)}</title>`);
-        lines.push(`    <content>${this.escapeXml(mem.content)}</content>`);
-        lines.push(`  </${mem.type}>`);
-      } else {
-        lines.push(`${openTag}${this.escapeXml(mem.content)}</${mem.type}>`);
-      }
-    }
-
-    lines.push('</memories>');
-    return lines.join('\n');
   }
 
   /**
@@ -1899,15 +1864,94 @@ export class MemoryManager {
   }
 
   /**
-   * Escape special XML characters
+   * Get recently accessed/modified memories sorted by recency
    */
-  private escapeXml(str: string): string {
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+  async getRecentMemories(query: RecencyQuery, cwd?: string): Promise<RecencyResult> {
+    const limit = query.limit ?? 10;
+    const sortBy: RecencySortField = query.sortBy ?? 'lastAccessedAt';
+
+    // Determine which scopes to search
+    const scopesToSearch: MemoryScope[] = [];
+    const queryScope = query.scope ?? 'project';
+    if (queryScope === 'all') {
+      scopesToSearch.push('global', 'local', 'committed');
+    } else if (queryScope === 'project') {
+      scopesToSearch.push('committed', 'local');
+    } else {
+      scopesToSearch.push(queryScope as MemoryScope);
+    }
+
+    // Collect all memories from the scopes
+    const allItems: MemoryItem[] = [];
+    for (const scope of scopesToSearch) {
+      const summaries = await this.list(scope, undefined, cwd);
+      const ids = summaries.map(s => s.id);
+      if (ids.length > 0) {
+        const store = this.getStore(scope, cwd);
+        const items = await store.readItems(ids);
+        allItems.push(...items);
+      }
+    }
+
+    // Filter by type if specified
+    let filtered = allItems;
+    if (query.types && query.types.length > 0) {
+      filtered = filtered.filter(item => query.types!.includes(item.type));
+    }
+
+    // Filter by tags if specified
+    if (query.tags && query.tags.length > 0) {
+      filtered = filtered.filter(item =>
+        query.tags!.some(tag => item.facets.tags.includes(tag))
+      );
+    }
+
+    // Filter by 'since' date if specified
+    if (query.since) {
+      const sinceDate = new Date(query.since);
+      filtered = filtered.filter(item => {
+        const timestamp = this.getRecencyTimestamp(item, sortBy);
+        return timestamp ? new Date(timestamp) >= sinceDate : false;
+      });
+    }
+
+    // Sort by the specified recency field (descending - most recent first)
+    filtered.sort((a, b) => {
+      const aTime = this.getRecencyTimestamp(a, sortBy);
+      const bTime = this.getRecencyTimestamp(b, sortBy);
+      if (!aTime && !bTime) return 0;
+      if (!aTime) return 1;  // Items without timestamp go to end
+      if (!bTime) return -1;
+      return new Date(bTime).getTime() - new Date(aTime).getTime();
+    });
+
+    // Apply limit
+    const items = filtered.slice(0, limit);
+
+    return {
+      items,
+      total: filtered.length,
+      scope: queryScope,
+      sortBy,
+    };
+  }
+
+  /**
+   * Get the appropriate timestamp from a memory item based on sort field
+   */
+  private getRecencyTimestamp(item: MemoryItem, sortBy: RecencySortField): string | undefined {
+    switch (sortBy) {
+      case 'lastUsedAt':
+        return item.quality.lastUsedAt;
+      case 'lastAccessedAt':
+        return item.quality.lastAccessedAt || item.updatedAt;
+      case 'updatedAt':
+        return item.updatedAt;
+      case 'createdAt':
+        return item.createdAt;
+      default:
+        return item.updatedAt;
+    }
   }
 
   /**
