@@ -253,7 +253,10 @@ class LLMKnowledgeBaseServer {
             const type = args.type as MemoryType;
             const title = args.title as string || '(no title)';
             const injection = args.injection as 'always' | 'on-demand' | undefined;
-            log(`Creating memory: type=${type}, scope=${scope}, title="${title}", injection=${injection || 'on-demand'}`);
+            log(
+              `Creating memory: type=${type}, scope=${scope}, ` +
+              `title="${title}", injection=${injection || 'on-demand'}`
+            );
 
             const id = await this.memory.upsert({
               id: args.id as string | undefined,
