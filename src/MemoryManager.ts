@@ -23,6 +23,11 @@ import type {
   MemoryConfig,
   MemoryLink,
   MemoryContextPack,
+  ContextInjectionQuery,
+  ContextInjectionResult,
+  ContextInjectionMemory,
+  ContextOutputFormat,
+  MemoryType,
 } from './types/Memory.js';
 
 function log(message: string, ...args: any[]) {
@@ -1696,6 +1701,213 @@ export class MemoryManager {
       links,
       source: { scope: result.scope, ids: items.map(i => i.id) },
     };
+  }
+
+  /**
+   * Get memories formatted for prompt injection with token budget awareness.
+   * Prioritizes memories with injection='always' policy, then high-confidence items.
+   * Returns formatted output suitable for direct inclusion in prompts.
+   */
+  async getContextForInjection(query: ContextInjectionQuery, cwd?: string): Promise<ContextInjectionResult> {
+    const maxTokens = query.maxTokens ?? 4000;
+    const includeAlwaysInject = query.includeAlwaysInject ?? true;
+    const format = query.format ?? 'xml';
+    const minConfidence = query.minConfidence ?? 0.5;
+    const now = new Date();
+
+    // Determine which scopes to search
+    const scopesToSearch: MemoryScope[] = [];
+    const queryScope = query.scope ?? 'project';
+    if (queryScope === 'all') {
+      scopesToSearch.push('global', 'local', 'committed');
+    } else if (queryScope === 'project') {
+      scopesToSearch.push('committed', 'local');
+    } else {
+      scopesToSearch.push(queryScope as MemoryScope);
+    }
+
+    // Collect all memories from the scopes (get full items, not summaries)
+    const allItems: MemoryItem[] = [];
+    for (const scope of scopesToSearch) {
+      const summaries = await this.list(scope, undefined, cwd);
+      const ids = summaries.map(s => s.id);
+      if (ids.length > 0) {
+        const store = this.getStore(scope, cwd);
+        const items = await store.readItems(ids);
+        allItems.push(...items);
+      }
+    }
+
+    // Filter by type if specified
+    let filtered = allItems;
+    if (query.types && query.types.length > 0) {
+      filtered = filtered.filter(item => query.types!.includes(item.type));
+    }
+
+    // Filter by tags if specified
+    if (query.tags && query.tags.length > 0) {
+      filtered = filtered.filter(item =>
+        query.tags!.some(tag => item.facets.tags.includes(tag))
+      );
+    }
+
+    // Separate 'always inject' items from 'on-demand' items
+    const alwaysInjectItems = filtered.filter(item => item.injection === 'always');
+    const onDemandItems = filtered.filter(item => item.injection !== 'always');
+
+    // Compute confidence for on-demand items and filter by minConfidence
+    const scoredOnDemand = onDemandItems
+      .map(item => ({
+        item,
+        confidence: this.computeConfidence(item, now),
+      }))
+      .filter(({ confidence }) => confidence >= minConfidence)
+      .sort((a, b) => b.confidence - a.confidence);
+
+    // Build the final list: always-inject items first (if enabled), then by confidence
+    const memories: ContextInjectionMemory[] = [];
+    let tokenCount = 0;
+    let truncated = false;
+
+    const addMemory = (item: MemoryItem, confidence: number): boolean => {
+      const content = (item.text || '') + (item.code ? `\n${item.code}` : '');
+      const contentTokens = estimateTokens(content);
+
+      if (tokenCount + contentTokens > maxTokens) {
+        truncated = true;
+        return false;
+      }
+
+      memories.push({
+        id: item.id,
+        type: item.type,
+        injection: item.injection || 'on-demand',
+        confidence,
+        title: item.title,
+        content: content.trim(),
+        tags: item.facets.tags,
+      });
+
+      tokenCount += contentTokens;
+      return true;
+    };
+
+    // Add always-inject items first (they get priority regardless of confidence)
+    if (includeAlwaysInject) {
+      for (const item of alwaysInjectItems) {
+        const confidence = this.computeConfidence(item, now);
+        if (!addMemory(item, confidence)) break;
+      }
+    }
+
+    // Add on-demand items by confidence until token budget exhausted
+    for (const { item, confidence } of scoredOnDemand) {
+      if (!addMemory(item, confidence)) break;
+    }
+
+    // Format the output
+    const formatted = this.formatContextInjection(memories, format);
+
+    return {
+      memories,
+      tokenCount,
+      truncated,
+      format,
+      formatted,
+    };
+  }
+
+  /**
+   * Format memories for prompt injection in the requested format
+   */
+  private formatContextInjection(memories: ContextInjectionMemory[], format: ContextOutputFormat): string {
+    if (memories.length === 0) {
+      return format === 'json' ? '{"memories": []}' :
+             format === 'xml' ? '<memories></memories>' :
+             '# Memories\n\n_No memories available_';
+    }
+
+    switch (format) {
+      case 'xml':
+        return this.formatAsXml(memories);
+      case 'markdown':
+        return this.formatAsMarkdown(memories);
+      case 'json':
+      default:
+        return JSON.stringify({ memories }, null, 2);
+    }
+  }
+
+  /**
+   * Format memories as XML for Claude-style prompt injection
+   */
+  private formatAsXml(memories: ContextInjectionMemory[]): string {
+    const lines: string[] = ['<memories>'];
+
+    for (const mem of memories) {
+      const attrs = [
+        `type="${mem.type}"`,
+        `confidence="${mem.confidence.toFixed(2)}"`,
+      ];
+      if (mem.injection === 'always') {
+        attrs.push('injection="always"');
+      }
+      if (mem.tags.length > 0) {
+        attrs.push(`tags="${mem.tags.join(', ')}"`);
+      }
+
+      const openTag = `  <${mem.type} ${attrs.join(' ')}>`;
+
+      if (mem.title) {
+        lines.push(openTag);
+        lines.push(`    <title>${this.escapeXml(mem.title)}</title>`);
+        lines.push(`    <content>${this.escapeXml(mem.content)}</content>`);
+        lines.push(`  </${mem.type}>`);
+      } else {
+        lines.push(`${openTag}${this.escapeXml(mem.content)}</${mem.type}>`);
+      }
+    }
+
+    lines.push('</memories>');
+    return lines.join('\n');
+  }
+
+  /**
+   * Format memories as Markdown
+   */
+  private formatAsMarkdown(memories: ContextInjectionMemory[]): string {
+    const lines: string[] = ['# Memories'];
+
+    for (const mem of memories) {
+      lines.push('');
+      const header = mem.title ? `## ${mem.title}` : `## ${mem.type}`;
+      lines.push(header);
+
+      const meta: string[] = [`**Type:** ${mem.type}`, `**Confidence:** ${(mem.confidence * 100).toFixed(0)}%`];
+      if (mem.injection === 'always') {
+        meta.push('**Injection:** always');
+      }
+      if (mem.tags.length > 0) {
+        meta.push(`**Tags:** ${mem.tags.join(', ')}`);
+      }
+      lines.push(meta.join(' | '));
+      lines.push('');
+      lines.push(mem.content);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Escape special XML characters
+   */
+  private escapeXml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
   }
 
   /**
