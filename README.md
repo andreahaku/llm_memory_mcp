@@ -1051,6 +1051,97 @@ Claude can now proactively check for relevant memories before starting tasks:
 
 Returns formatted markdown with relevant memories, code snippets, and confidence scores to help Claude discover existing knowledge patterns automatically.
 
+### Context Injection with Token Budget (`mem.context`)
+
+Inspired by [how Claude's memory system works](https://medium.com/@tattva.tarang/i-tried-to-reverse-engineer-how-claude-remembers-things-what-i-found-surprised-me), memories can now be marked for automatic injection into prompts, with token-budget-aware retrieval.
+
+**Injection Policy:**
+
+Memories can have an `injection` field with two values:
+- **`always`** - High-value memories always included in context (like Claude's "user memories")
+- **`on-demand`** - Retrieved only when explicitly searched (default behavior)
+
+**Create an always-inject memory:**
+```json
+{ "name": "mem.upsert", "arguments": {
+  "type": "fact",
+  "scope": "local",
+  "injection": "always",
+  "title": "User Preferences",
+  "text": "User prefers TypeScript over JavaScript. Always use strict mode.",
+  "tags": ["preferences", "typescript"]
+}}
+```
+
+**Retrieve memories for prompt injection:**
+```json
+{ "name": "mem.context", "arguments": {
+  "scope": "project",
+  "maxTokens": 4000,
+  "format": "xml",
+  "minConfidence": 0.5
+}}
+```
+
+**Parameters:**
+- `scope` - Which scopes to search (global, local, committed, project, all)
+- `maxTokens` - Token budget for output (default: 4000)
+- `includeAlwaysInject` - Include all 'always' injection memories first (default: true)
+- `format` - Output format: `xml`, `json`, or `markdown` (default: xml)
+- `minConfidence` - Minimum confidence threshold (default: 0.5)
+- `types` - Filter by memory types (e.g., ["fact", "insight"])
+- `tags` - Filter by tags
+
+**Output Formats:**
+
+*XML Format (default)* - Claude-style structured injection:
+```xml
+<memories>
+  <fact type="fact" confidence="0.95" injection="always">
+    <title>User Preferences</title>
+    <content>User prefers TypeScript over JavaScript</content>
+  </fact>
+  <insight type="insight" confidence="0.82" tags="architecture, patterns">
+    BM25 search performs better than pure vector for code
+  </insight>
+</memories>
+```
+
+*JSON Format* - Machine-readable:
+```json
+{
+  "memories": [
+    {
+      "id": "01ABC...",
+      "type": "fact",
+      "injection": "always",
+      "confidence": 0.95,
+      "title": "User Preferences",
+      "content": "User prefers TypeScript over JavaScript",
+      "tags": []
+    }
+  ]
+}
+```
+
+*Markdown Format* - Human-readable documentation:
+```markdown
+# Memories
+
+## User Preferences
+**Type:** fact | **Confidence:** 95% | **Injection:** always
+
+User prefers TypeScript over JavaScript
+```
+
+**How it works:**
+1. `injection='always'` items are included first (they get priority)
+2. Remaining token budget is filled with high-confidence on-demand items
+3. Items are sorted by confidence score
+4. Output is truncated to fit within token budget
+
+This mirrors Claude's architecture where "user memories" are always injected, while "conversation history" is retrieved on-demand.
+
 ### Incremental Editing Operations
 
 Edit memories without full rewrites, inspired by Claude's `str_replace` and `insert` commands:
