@@ -59,3 +59,5 @@ export const SCOPE_FILTERS = ['global', 'local', 'committed', 'project', 'all'];
 export const SENSITIVITIES = ['public', 'team', 'private'];
 export const LINK_RELS = ['refines', 'duplicates', 'depends', 'fixes', 'relates'];
 export const BACKENDS = ['file', 'video'];
+export const INJECTION_POLICIES = ['always', 'on-demand'];
+export const CONTEXT_OUTPUT_FORMATS = ['json', 'markdown'];

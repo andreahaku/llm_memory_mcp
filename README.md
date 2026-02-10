@@ -1051,6 +1051,112 @@ Claude can now proactively check for relevant memories before starting tasks:
 
 Returns formatted markdown with relevant memories, code snippets, and confidence scores to help Claude discover existing knowledge patterns automatically.
 
+### Context Injection with Token Budget (`mem.context`)
+
+Inspired by [how Claude's memory system works](https://medium.com/@tattva.tarang/i-tried-to-reverse-engineer-how-claude-remembers-things-what-i-found-surprised-me), memories can now be marked for automatic injection into prompts, with token-budget-aware retrieval.
+
+**Injection Policy:**
+
+Memories can have an `injection` field with two values:
+- **`always`** - High-value memories always included in context (like Claude's "user memories")
+- **`on-demand`** - Retrieved only when explicitly searched (default behavior)
+
+**Create an always-inject memory:**
+```json
+{ "name": "mem.upsert", "arguments": {
+  "type": "fact",
+  "scope": "local",
+  "injection": "always",
+  "title": "User Preferences",
+  "text": "User prefers TypeScript over JavaScript. Always use strict mode.",
+  "tags": ["preferences", "typescript"]
+}}
+```
+
+**Retrieve memories for prompt injection:**
+```json
+{ "name": "mem.context", "arguments": {
+  "scope": "project",
+  "maxTokens": 4000,
+  "minConfidence": 0.5
+}}
+```
+
+**Parameters:**
+- `scope` - Which scopes to search (global, local, committed, project, all)
+- `maxTokens` - Token budget for output (default: 4000)
+- `includeAlwaysInject` - Include all 'always' injection memories first (default: true)
+- `format` - Output format: `json` or `markdown` (default: json)
+- `minConfidence` - Minimum confidence threshold (default: 0.5)
+- `types` - Filter by memory types (e.g., ["fact", "insight"])
+- `tags` - Filter by tags
+
+**Output Formats:**
+
+*JSON Format (default)* - Machine-readable:
+```json
+{
+  "memories": [
+    {
+      "id": "01ABC...",
+      "type": "fact",
+      "injection": "always",
+      "confidence": 0.95,
+      "title": "User Preferences",
+      "content": "User prefers TypeScript over JavaScript",
+      "tags": []
+    }
+  ]
+}
+```
+
+*Markdown Format* - Human-readable documentation:
+```markdown
+# Memories
+
+## User Preferences
+**Type:** fact | **Confidence:** 95% | **Injection:** always
+
+User prefers TypeScript over JavaScript
+```
+
+**How it works:**
+1. `injection='always'` items are included first (they get priority)
+2. Remaining token budget is filled with high-confidence on-demand items
+3. Items are sorted by confidence score
+4. Output is truncated to fit within token budget
+
+This mirrors Claude's architecture where "user memories" are always injected, while "conversation history" is retrieved on-demand.
+
+### Recency-Based Retrieval (`mem.recent`)
+
+Retrieve recently accessed or modified memories, sorted by recency. This is useful for reviewing recent work or continuing where you left off.
+
+**Get 10 most recently accessed memories:**
+```json
+{ "name": "mem.recent", "arguments": {
+  "scope": "project",
+  "limit": 10
+}}
+```
+
+**Get memories modified in the last 24 hours:**
+```json
+{ "name": "mem.recent", "arguments": {
+  "scope": "local",
+  "sortBy": "updatedAt",
+  "since": "2024-01-14T00:00:00Z"
+}}
+```
+
+**Parameters:**
+- `scope` - Which scopes to search (global, local, committed, project, all)
+- `limit` - Maximum number of results (default: 10)
+- `types` - Filter by memory types (e.g., ["snippet", "insight"])
+- `tags` - Filter by tags
+- `sortBy` - Sort field: `lastUsedAt`, `lastAccessedAt`, `updatedAt`, or `createdAt` (default: lastAccessedAt)
+- `since` - Only return items accessed/modified since this ISO date
+
 ### Incremental Editing Operations
 
 Edit memories without full rewrites, inspired by Claude's `str_replace` and `insert` commands:

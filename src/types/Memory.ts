@@ -5,6 +5,13 @@ export type QueryScope = 'global' | 'local' | 'committed' | 'project' | 'all';
 
 export type Sensitivity = 'public' | 'team' | 'private';
 
+/**
+ * Injection policy determines when a memory is included in context:
+ * - 'always': Memory is always injected into prompts (high-value, stable facts)
+ * - 'on-demand': Memory is only retrieved when explicitly searched for (default)
+ */
+export type InjectionPolicy = 'always' | 'on-demand';
+
 export interface MemoryFacets {
   tags: string[];
   files: string[];
@@ -62,6 +69,7 @@ export interface MemoryItem {
   id: string; // ULID
   type: MemoryType;
   scope: MemoryScope;
+  injection?: InjectionPolicy; // 'always' = always in context, 'on-demand' = search only (default)
   title?: string;
   text?: string;
   code?: string;
@@ -281,4 +289,73 @@ export interface ConfidenceConfig {
     tagSymbol?: number;  // default: 0.3 (cap)
     neutral?: number;    // default: 0.5 when no context present
   };
+}
+
+/**
+ * Output format for context injection
+ */
+export type ContextOutputFormat = 'json' | 'markdown';
+
+/**
+ * Query parameters for mem.context tool - retrieves memories for prompt injection
+ */
+export interface ContextInjectionQuery {
+  scope?: QueryScope;
+  maxTokens?: number;           // Token budget for output (default: 4000)
+  includeAlwaysInject?: boolean; // Include all 'always' injection memories (default: true)
+  format?: ContextOutputFormat;  // Output format (default: 'json')
+  minConfidence?: number;       // Minimum confidence threshold (default: 0.5)
+  types?: MemoryType[];         // Filter by memory types
+  tags?: string[];              // Filter by tags
+}
+
+/**
+ * Result from context injection query
+ */
+export interface ContextInjectionResult {
+  memories: ContextInjectionMemory[];
+  tokenCount: number;
+  truncated: boolean;
+  format: ContextOutputFormat;
+  formatted: string;            // Pre-formatted output in requested format
+}
+
+/**
+ * Simplified memory representation for context injection
+ */
+export interface ContextInjectionMemory {
+  id: string;
+  type: MemoryType;
+  injection: InjectionPolicy;
+  confidence: number;
+  title?: string;
+  content: string;              // Combined text/code content
+  tags: string[];
+}
+
+/**
+ * Sort field options for recency-based retrieval
+ */
+export type RecencySortField = 'lastUsedAt' | 'lastAccessedAt' | 'updatedAt' | 'createdAt';
+
+/**
+ * Query parameters for mem.recent tool - retrieves recently accessed/modified memories
+ */
+export interface RecencyQuery {
+  scope?: QueryScope;
+  limit?: number;               // Max results (default: 10)
+  types?: MemoryType[];         // Filter by memory types
+  tags?: string[];              // Filter by tags
+  sortBy?: RecencySortField;    // Sort field (default: 'lastAccessedAt')
+  since?: string;               // Only return items accessed/modified since this ISO date
+}
+
+/**
+ * Result from recency-based retrieval
+ */
+export interface RecencyResult {
+  items: MemoryItem[];
+  total: number;
+  scope: QueryScope;
+  sortBy: RecencySortField;
 }

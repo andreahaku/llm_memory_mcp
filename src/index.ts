@@ -252,12 +252,17 @@ class LLMKnowledgeBaseServer {
             const scope = args.scope as MemoryScope;
             const type = args.type as MemoryType;
             const title = args.title as string || '(no title)';
-            log(`Creating memory: type=${type}, scope=${scope}, title="${title}"`);
+            const injection = args.injection as 'always' | 'on-demand' | undefined;
+            log(
+              `Creating memory: type=${type}, scope=${scope}, ` +
+              `title="${title}", injection=${injection || 'on-demand'}`
+            );
 
             const id = await this.memory.upsert({
               id: args.id as string | undefined,
               type: args.type as MemoryType,
               scope: args.scope as MemoryScope,
+              injection: injection, // 'always' or 'on-demand' (default)
               title: args.title as string | undefined,
               text: args.text as string | undefined,
               code: args.code as string | undefined,
@@ -828,6 +833,34 @@ class LLMKnowledgeBaseServer {
 
             log(`Usage recorded successfully: id=${id}`);
             return { content: [{ type: 'text', text: 'memory.use: ok' }] };
+          }
+
+          case 'mem.context': {
+            const result = await this.memory.getContextForInjection({
+              scope: args.scope as any,
+              maxTokens: args.maxTokens as number | undefined,
+              includeAlwaysInject: args.includeAlwaysInject as boolean | undefined,
+              format: args.format as any,
+              minConfidence: args.minConfidence as number | undefined,
+              types: args.types as any,
+              tags: args.tags as string[] | undefined,
+            });
+
+            // Return the formatted output directly for easy prompt injection
+            return { content: [{ type: 'text', text: result.formatted }] };
+          }
+
+          case 'mem.recent': {
+            const result = await this.memory.getRecentMemories({
+              scope: args.scope as any,
+              limit: args.limit as number | undefined,
+              types: args.types as any,
+              tags: args.tags as string[] | undefined,
+              sortBy: args.sortBy as any,
+              since: args.since as string | undefined,
+            });
+
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
           case 'jour.stats': {
