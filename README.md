@@ -1,5 +1,7 @@
 # LLM Memory MCP Server (Memory-First)
 
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/andreahaku) [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/andreahaku)
+
 A local-first, team-ready MCP server that provides a durable memory system for LLM-based coding workflows. It's optimized for JavaScript/TypeScript development (web and mobile), but works for any stack. Memory items can be stored globally, locally per project, or committed to the repo for team sharing — with fast search, ranking, and per-scope tuning.
 
 ## Highlights
@@ -1646,3 +1648,7 @@ Example workflow:
 // Search will now rank this item higher in future queries
 { "name": "mem.query", "arguments": { "q": "react debounce", "scope": "project", "k": 10 } }
 ```
+
+## Support
+
+LLM Memory MCP is free and open source. If it is useful to you, you can support its development with a one-off donation on [Ko-fi](https://ko-fi.com/andreahaku) or by sponsoring me on [GitHub Sponsors](https://github.com/sponsors/andreahaku). Donations are voluntary and do not unlock any feature.
